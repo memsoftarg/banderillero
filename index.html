@@ -159,12 +159,14 @@ if ("serviceWorker" in navigator) {
   <div><span id="gpsdot"></span><b id="stSpeed">0.0</b> <span class="u">km/h</span> · ±<b id="stAcc">–</b> <span class="u">m</span></div>
   <div><b id="stHa">0.00</b> <span class="u">ha</span> · <b id="stOv">0.0</b><span class="u">% solape</span></div>
   <div class="u" id="stSaved">💾 sin guardar aún</div>
+  <div id="stMark" style="display:none">📍 <b id="stMarkD">–</b> <span class="u">al punto</span></div>
 </div>
 
 <div id="side">
   <button class="sbtn" id="zoomIn">＋</button>
   <button class="sbtn" id="zoomOut">－</button>
   <button class="sbtn" id="rotBtn" title="Orientación">▲</button>
+  <button class="sbtn" id="markBtn" title="Guardar posición">📍</button>
 </div>
 
 <div id="steer">
@@ -219,6 +221,7 @@ if ("serviceWorker" in navigator) {
       </div>
     </div>
     <button class="big alt" id="closeCfg">Volver al mapa</button>
+    <button class="big danger" id="resetMark">Borrar punto 📍</button>
     <button class="big danger" id="resetAB">Borrar línea A–B</button>
     <button class="big danger" id="resetPaint">Borrar todo lo pintado</button>
     <p class="note">
@@ -250,6 +253,7 @@ const S = {
   acc: null,            // precisión GPS m
   painting: false,
   A: null, B: null, ab: null,   // ab: {a,u,n}
+  mark: null,                   // punto de retorno guardado con 📍
   demo: false, started: false,
   zoom: 7,              // px CSS por metro
   courseUp: true,
@@ -311,7 +315,7 @@ function stamp(p1, p2, w){
       lt[i]=ns;
     }
   }
-  if(g.length){ pctx.fillStyle='rgba(63,163,77,0.85)';
+  if(g.length){ pctx.fillStyle='#3FA34D';
     for(let k=0;k<g.length;k+=2) pctx.fillRect(g[k],g[k+1],1,1); }
   if(r.length){ pctx.fillStyle='#E04338';
     for(let k=0;k<r.length;k+=2) pctx.fillRect(r[k],r[k+1],1,1); }
@@ -348,7 +352,7 @@ function saveWork(){
   for(let i=0,j=0;i<cov.length;i++) if(cov[i]){ idxs[j]=i; sts[j]=cov[i]; j++; }
   return kvSet('trabajo', {
     v:1, savedAt:Date.now(), demo:S.demo, width:S.width,
-    origin, A:S.A, B:S.B, pos:S.pos, heading:S.heading,
+    origin, A:S.A, B:S.B, mark:S.mark, pos:S.pos, heading:S.heading,
     areaCells:S.areaCells, overlapCells:S.overlapCells, idxs, sts
   }).then(()=>{
     $('stSaved').textContent = '💾 guardado '+
@@ -370,7 +374,7 @@ addEventListener('pagehide', ()=>{ if(S.started) saveWork().catch(()=>{}); });
 function resumeWork(w){
   if(w.width) setWidth(w.width);
   origin = w.origin || null;
-  S.A = w.A || null; S.B = w.B || null;
+  S.A = w.A || null; S.B = w.B || null; S.mark = w.mark || null;
   S.areaCells = w.areaCells || 0; S.overlapCells = w.overlapCells || 0;
   start(!!w.demo, true);
   if(w.demo && w.pos){
@@ -378,7 +382,7 @@ function resumeWork(w){
     demoP.x = w.pos.x; demoP.y = w.pos.y; demoH = w.heading || 0;
   }
   if(S.A && S.B) setAB();
-  pctx.fillStyle='rgba(63,163,77,0.85)';
+  pctx.fillStyle='#3FA34D';
   for(let i=0;i<w.idxs.length;i++) if(w.sts[i]===1){
     const idx=w.idxs[i]; cov[idx]=1; pctx.fillRect(idx%GRID,(idx/GRID)|0,1,1);
   }
@@ -396,26 +400,27 @@ function implPos(){
   return { x: S.pos.x - Math.sin(S.heading)*HITCH, y: S.pos.y - Math.cos(S.heading)*HITCH };
 }
 
+let lastRaw = null;
 function onFix(x, y, meta){
   meta = meta||{};
-  if(S.pos){
-    const dx=x-S.pos.x, dy=y-S.pos.y, d=Math.hypot(dx,dy);
+  const now = performance.now();
+  // rumbo y velocidad a partir de los fixes crudos (no de la posición estimada)
+  if(lastRaw){
+    const dx=x-lastRaw.x, dy=y-lastRaw.y, d=Math.hypot(dx,dy);
+    const dtf=(now-lastRaw.t)/1000;
     if(meta.heading!=null && !isNaN(meta.heading) && (meta.speed||0)>0.4){
       S.heading = meta.heading*Math.PI/180;
     } else if(d>0.25){
       S.heading = Math.atan2(dx,dy);
     }
     if(meta.speed!=null && !isNaN(meta.speed)) S.speed = meta.speed;
-    else {
-      const dt=(performance.now()-(onFix._t||0))/1000;
-      if(dt>0.05) S.speed = S.speed*0.5 + (d/dt)*0.5;
-    }
-    // suavizado leve
-    x = S.pos.x + (x-S.pos.x)*0.7;
-    y = S.pos.y + (y-S.pos.y)*0.7;
+    else if(dtf>0.05) S.speed = S.speed*0.4 + (d/dtf)*0.6;
   }
-  onFix._t = performance.now();
-  S.pos = {x,y};
+  lastRaw = {x, y, t:now};
+  // la posición estimada (que avanza sola entre fixes) se corrige hacia el fix real
+  if(!S.pos) S.pos = {x, y};
+  else { S.pos.x += (x-S.pos.x)*0.6; S.pos.y += (y-S.pos.y)*0.6; }
+  x = S.pos.x; y = S.pos.y;
   if(Math.max(Math.abs(x),Math.abs(y)) > EXT-60 && !onFix._warned){
     onFix._warned = true;
     toast('Estás cerca del límite del área de trabajo (1,9 km del inicio)', 6000);
@@ -472,6 +477,11 @@ function updateHUD(){
     S.acc==null ? 'var(--muted)' : S.acc<4 ? 'var(--green-bright)' : S.acc<10 ? 'var(--amber)' : 'var(--red)';
   $('stHa').textContent = (S.areaCells*CELL*CELL/10000).toFixed(2);
   $('stOv').textContent = S.areaCells ? (S.overlapCells/S.areaCells*100).toFixed(1) : '0.0';
+  if(S.mark && S.pos){
+    const dm = Math.hypot(S.mark.x-S.pos.x, S.mark.y-S.pos.y);
+    $('stMarkD').textContent = dm>=1000 ? (dm/1000).toFixed(2)+' km' : dm.toFixed(0)+' m';
+    $('stMark').style.display='block';
+  } else $('stMark').style.display='none';
 
   const g = guidance();
   for(let i=0;i<NLED;i++) ledEls[i].className = 'led'+(i===CLED?' center':'');
@@ -513,7 +523,18 @@ addEventListener('resize', resize); resize();
 
 let camX=0, camY=0, camH=0, camOn=false;
 function loop(ts){
-  if(!loop.last || ts-loop.last>=32){ loop.last=ts; draw(); } // ~30 fps alcanza (GPS es 1 Hz)
+  if(!loop.last || ts-loop.last>=32){
+    // predicción entre fixes: la posición avanza con el rumbo y la velocidad
+    // actuales, y onFix la corrige cuando llega el dato real del GPS (1 Hz)
+    const dt = Math.min((ts-(loop.last||ts))/1000, 0.3);
+    loop.last = ts;
+    if(S.started && S.pos && S.speed>0.4){
+      S.pos.x += Math.sin(S.heading)*S.speed*dt;
+      S.pos.y += Math.cos(S.heading)*S.speed*dt;
+    }
+    draw();
+    if(!loop.hud || ts-loop.hud>=120){ loop.hud=ts; if(S.started) updateHUD(); }
+  }
   requestAnimationFrame(loop);
 }
 function draw(){
@@ -544,7 +565,8 @@ function draw(){
   for(let gy=Math.floor((camY-R)/50)*50; gy<=camY+R; gy+=50){ ctx.moveTo(camX-R,gy); ctx.lineTo(camX+R,gy); }
   ctx.stroke();
 
-  // cobertura pintada: solo la porción visible del lienzo grande
+  // cobertura pintada: solo la porción visible del lienzo grande, sin difuminar
+  ctx.imageSmoothingEnabled = false;
   if(pcan){
     const x0=Math.max(-EXT,camX-R), x1=Math.min(EXT,camX+R);
     const y0=Math.max(-EXT,camY-R), y1=Math.min(EXT,camY+R);
@@ -591,6 +613,20 @@ function draw(){
   // implemento (barra detrás del tractor) + tractor
   const hvx=Math.sin(S.heading), hvy=Math.cos(S.heading);
   const rvx=hvy, rvy=-hvx, hw=S.width/2;
+
+  // punto de retorno 📍: banderilla roja
+  if(S.mark){
+    ctx.save();
+    ctx.translate(S.mark.x, S.mark.y);
+    ctx.scale(1/s,-1/s); ctx.rotate(-rot); // tamaño fijo en pantalla, siempre derecha
+    ctx.strokeStyle='#E9EFE9'; ctx.lineWidth=2.4*dpr;
+    ctx.beginPath(); ctx.moveTo(0,4*dpr); ctx.lineTo(0,-24*dpr); ctx.stroke();
+    ctx.fillStyle='#E04338';
+    ctx.beginPath();
+    ctx.moveTo(0,-24*dpr); ctx.lineTo(16*dpr,-18*dpr); ctx.lineTo(0,-12*dpr);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
 
   // proyección del rumbo: línea punteada hacia adelante desde el centro del tractor
   ctx.strokeStyle='rgba(233,239,233,0.75)';
@@ -776,6 +812,10 @@ paintBtn.addEventListener('click', ()=>{
 
 $('cfgBtn').addEventListener('click', ()=>{ syncWidthInputs(); $('settings').style.display='flex'; });
 $('closeCfg').addEventListener('click', ()=>{ $('settings').style.display='none'; });
+$('resetMark').addEventListener('click', ()=>{
+  S.mark=null; updateHUD(); saveWork().catch(()=>{});
+  $('settings').style.display='none'; toast('Punto 📍 borrado.');
+});
 $('resetAB').addEventListener('click', ()=>{
   S.A=null; S.B=null; S.ab=null; abLabel(); updateHUD(); saveWork().catch(()=>{});
   $('settings').style.display='none'; toast('Línea A–B borrada. Marcá A de nuevo.');
@@ -785,6 +825,15 @@ $('resetPaint').addEventListener('click', ()=>{
   cov.fill(0); lt.fill(0); pctx.clearRect(0,0,GRID,GRID);
   S.areaCells=0; S.overlapCells=0; lastPaint = S.painting && S.pos ? implPos() : null;
   $('settings').style.display='none'; updateHUD(); saveWork().catch(()=>{});
+});
+
+$('markBtn').addEventListener('click', ()=>{
+  if(!S.pos){ toast('Todavía no hay posición GPS.'); return; }
+  const habia = !!S.mark;
+  S.mark = {...S.pos};
+  toast(habia ? 'Punto 📍 actualizado a la posición actual.'
+              : 'Posición guardada 📍. La distancia al punto se muestra abajo a la izquierda.', 4000);
+  updateHUD(); saveWork().catch(()=>{});
 });
 
 $('zoomIn').addEventListener('click', ()=>{ S.zoom=clamp(S.zoom*1.4,0.6,40); });
