@@ -116,6 +116,7 @@
     font-size:17px; font-weight:800; color:#08140A; background:var(--green);
   }
   .big.alt{background:var(--panel2); color:var(--text); border:1px solid var(--line)}
+  .big.resume{background:var(--amber); color:#1A1206}
   .big.danger{background:transparent; color:var(--red); border:1px solid var(--red)}
   .big:active{filter:brightness(1.2)}
   .note{font-size:12.5px; color:var(--muted); line-height:1.5; margin-top:14px}
@@ -171,6 +172,7 @@
         <button id="wPlus">＋</button>
       </div>
     </div>
+    <button class="big resume" id="resumeBtn" style="display:none"></button>
     <button class="big" id="startGps">Iniciar con GPS</button>
     <button class="big alt" id="startDemo">Probar en modo demo</button>
     <p class="note">
@@ -234,7 +236,7 @@ const S = {
   areaCells: 0, overlapCells: 0,
 };
 
-let origin = null, lastPaint = null, t0 = performance.now();
+let origin = null, lastPaint = null, dirty = false, t0 = performance.now();
 let cov = null, lt = null;      // Uint8 cobertura, Uint32 último sello (s)
 let pcan = null, pctx = null;   // canvas de pintado (1 px = 1 celda)
 
@@ -293,6 +295,72 @@ function stamp(p1, p2, w){
     for(let k=0;k<g.length;k+=2) pctx.fillRect(g[k],g[k+1],1,1); }
   if(r.length){ pctx.fillStyle='#E04338';
     for(let k=0;k<r.length;k+=2) pctx.fillRect(r[k],r[k+1],1,1); }
+  if(g.length || r.length) dirty = true;
+}
+
+/* ============ guardado automático / retomar ============ */
+let _db = null;
+function idb(){
+  if(_db) return Promise.resolve(_db);
+  return new Promise((res,rej)=>{
+    const r = indexedDB.open('banderillero', 1);
+    r.onupgradeneeded = ()=>r.result.createObjectStore('kv');
+    r.onsuccess = ()=>{ _db = r.result; res(_db); };
+    r.onerror = ()=>rej(r.error);
+  });
+}
+function kv(mode, fn){
+  return idb().then(db=>new Promise((res,rej)=>{
+    const t = db.transaction('kv', mode), q = fn(t.objectStore('kv'));
+    t.oncomplete = ()=>res(q && q.result);
+    t.onerror = ()=>rej(t.error);
+  }));
+}
+const kvSet = (k,v)=>kv('readwrite', s=>s.put(v,k));
+const kvGet = k=>kv('readonly', s=>s.get(k));
+const kvDel = k=>kv('readwrite', s=>s.delete(k));
+
+function saveWork(){
+  if(!S.started || !cov) return Promise.resolve();
+  let n=0;
+  for(let i=0;i<cov.length;i++) if(cov[i]) n++;
+  const idxs=new Uint32Array(n), sts=new Uint8Array(n);
+  for(let i=0,j=0;i<cov.length;i++) if(cov[i]){ idxs[j]=i; sts[j]=cov[i]; j++; }
+  return kvSet('trabajo', {
+    v:1, savedAt:Date.now(), demo:S.demo, width:S.width,
+    origin, A:S.A, B:S.B, pos:S.pos, heading:S.heading,
+    areaCells:S.areaCells, overlapCells:S.overlapCells, idxs, sts
+  });
+}
+const clearWork = ()=>kvDel('trabajo').catch(()=>{});
+
+setInterval(()=>{ if(dirty){ dirty=false; saveWork().catch(()=>{}); } }, 20000);
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden && S.started) saveWork().catch(()=>{});
+});
+addEventListener('pagehide', ()=>{ if(S.started) saveWork().catch(()=>{}); });
+
+function resumeWork(w){
+  if(w.width) setWidth(w.width);
+  origin = w.origin || null;
+  S.A = w.A || null; S.B = w.B || null;
+  S.areaCells = w.areaCells || 0; S.overlapCells = w.overlapCells || 0;
+  start(!!w.demo, true);
+  if(w.demo && w.pos){
+    S.pos = {...w.pos}; S.heading = w.heading || 0;
+    demoP.x = w.pos.x; demoP.y = w.pos.y; demoH = w.heading || 0;
+  }
+  if(S.A && S.B) setAB();
+  pctx.fillStyle='rgba(63,163,77,0.85)';
+  for(let i=0;i<w.idxs.length;i++) if(w.sts[i]===1){
+    const idx=w.idxs[i]; cov[idx]=1; pctx.fillRect(idx%GRID,(idx/GRID)|0,1,1);
+  }
+  pctx.fillStyle='#E04338';
+  for(let i=0;i<w.idxs.length;i++) if(w.sts[i]===2){
+    const idx=w.idxs[i]; cov[idx]=2; pctx.fillRect(idx%GRID,(idx/GRID)|0,1,1);
+  }
+  abLabel(); updateHUD();
+  toast('Trabajo retomado: '+(S.areaCells*CELL*CELL/10000).toFixed(2)+' ha. Se sigue guardando solo.', 5000);
 }
 
 /* ================= posición ================= */
@@ -579,6 +647,7 @@ function setWidth(v){
   v = clamp(parseFloat(v)||S.width, 1, 60);
   S.width = Math.round(v*2)/2;
   localStorage.setItem('bg_width', S.width);
+  dirty = true;
   syncWidthInputs(); updateHUD();
 }
 for(const [id,d] of [['wMinus',-0.5],['wPlus',0.5],['wMinus2',-0.5],['wPlus2',0.5]])
@@ -586,23 +655,46 @@ for(const [id,d] of [['wMinus',-0.5],['wPlus',0.5],['wMinus2',-0.5],['wPlus2',0.
 $('widthInp').addEventListener('change', e=>setWidth(e.target.value));
 $('widthInp2').addEventListener('change', e=>setWidth(e.target.value));
 
-function start(demo){
+function start(demo, resumed){
   S.demo = demo; S.started = true;
   initGrid();
   $('setup').style.display='none';
   $('modeLbl').textContent = demo ? 'Modo demo (sin GPS)' : 'Modo GPS';
   if(demo){
     $('steer').style.display='flex';
-    S.acc=null; onFix(0,0,{speed:0});
-    toast('Demo: mantené apretado ⟲ ⟳ para doblar. Marcá A, avanzá y marcá B.', 6000);
+    S.acc=null;
+    if(!resumed){
+      onFix(0,0,{speed:0});
+      toast('Demo: mantené apretado ⟲ ⟳ para doblar. Marcá A, avanzá y marcá B.', 6000);
+    }
   } else {
     startGPS();
-    toast('Buscando señal GPS… salí a cielo abierto.', 5000);
+    if(!resumed) toast('Buscando señal GPS… salí a cielo abierto.', 5000);
   }
   keepAwake();
 }
-$('startGps').addEventListener('click', ()=>start(false));
-$('startDemo').addEventListener('click', ()=>start(true));
+function freshStart(demo){
+  kvGet('trabajo').then(w=>{
+    if(w && w.idxs && w.idxs.length &&
+       !confirm('Hay un trabajo guardado. ¿Empezar uno nuevo y borrarlo?')) return;
+    clearWork(); start(demo);
+  }).catch(()=>start(demo));
+}
+$('startGps').addEventListener('click', ()=>freshStart(false));
+$('startDemo').addEventListener('click', ()=>freshStart(true));
+
+// si hay un trabajo guardado, ofrecer retomarlo
+kvGet('trabajo').then(w=>{
+  if(!w || !w.idxs || !w.idxs.length) return;
+  const ha = (w.areaCells*CELL*CELL/10000).toFixed(2);
+  const d = new Date(w.savedAt);
+  const cuando = d.toLocaleDateString('es-AR',{day:'numeric',month:'short'})+' '+
+                 d.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+  const b = $('resumeBtn');
+  b.textContent = 'Retomar trabajo ('+ha+' ha · '+cuando+')';
+  b.style.display = 'block';
+  b.addEventListener('click', ()=>resumeWork(w));
+}).catch(()=>{});
 
 const abBtn = $('abBtn');
 function abLabel(){
@@ -616,7 +708,7 @@ abBtn.addEventListener('click', ()=>{
   if(!S.A){ S.A={...S.pos}; toast('Punto A marcado. Avanzá derecho hasta el final y marcá B.'); }
   else if(!S.B){ S.B={...S.pos}; if(setAB()) toast('Línea A–B fijada. Guiado activo.'); }
   else { toast('Para cambiar la línea A–B entrá a Ajustes.'); }
-  abLabel(); updateHUD();
+  abLabel(); updateHUD(); saveWork().catch(()=>{});
 });
 
 const paintBtn = $('paintBtn');
@@ -630,14 +722,14 @@ paintBtn.addEventListener('click', ()=>{
 $('cfgBtn').addEventListener('click', ()=>{ syncWidthInputs(); $('settings').style.display='flex'; });
 $('closeCfg').addEventListener('click', ()=>{ $('settings').style.display='none'; });
 $('resetAB').addEventListener('click', ()=>{
-  S.A=null; S.B=null; S.ab=null; abLabel(); updateHUD();
+  S.A=null; S.B=null; S.ab=null; abLabel(); updateHUD(); saveWork().catch(()=>{});
   $('settings').style.display='none'; toast('Línea A–B borrada. Marcá A de nuevo.');
 });
 $('resetPaint').addEventListener('click', ()=>{
   if(!confirm('¿Borrar toda la cobertura pintada?')) return;
   cov.fill(0); lt.fill(0); pctx.clearRect(0,0,GRID,GRID);
   S.areaCells=0; S.overlapCells=0; lastPaint = S.painting && S.pos ? implPos() : null;
-  $('settings').style.display='none'; updateHUD();
+  $('settings').style.display='none'; updateHUD(); saveWork().catch(()=>{});
 });
 
 $('zoomIn').addEventListener('click', ()=>{ S.zoom=clamp(S.zoom*1.4,0.6,40); });
@@ -667,6 +759,6 @@ cvs.addEventListener('touchend', ()=>{ pinch0=null; });
 syncWidthInputs(); abLabel(); updateHUD();
 
 // gancho de depuración
-window.BG = {S, onFix, stamp, guidance, draw, demoPos:demoP, get demoH(){return demoH}, set demoH(v){demoH=v}};
+window.BG = {S, onFix, stamp, guidance, draw, saveWork, demoPos:demoP, get demoH(){return demoH}, set demoH(v){demoH=v}};
 })();
 </script>
