@@ -139,6 +139,7 @@
 <div id="stats">
   <div><span id="gpsdot"></span><b id="stSpeed">0.0</b> <span class="u">km/h</span> · ±<b id="stAcc">–</b> <span class="u">m</span></div>
   <div><b id="stHa">0.00</b> <span class="u">ha</span> · <b id="stOv">0.0</b><span class="u">% solape</span></div>
+  <div class="u" id="stSaved">💾 sin guardar aún</div>
 </div>
 
 <div id="side">
@@ -330,6 +331,13 @@ function saveWork(){
     v:1, savedAt:Date.now(), demo:S.demo, width:S.width,
     origin, A:S.A, B:S.B, pos:S.pos, heading:S.heading,
     areaCells:S.areaCells, overlapCells:S.overlapCells, idxs, sts
+  }).then(()=>{
+    $('stSaved').textContent = '💾 guardado '+
+      new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+    if(!saveWork._told && S.areaCells>0){
+      saveWork._told = true;
+      toast('Trabajo guardado automáticamente. Al reabrir la app vas a poder retomarlo desde acá.', 4500);
+    }
   });
 }
 const clearWork = ()=>kvDel('trabajo').catch(()=>{});
@@ -478,55 +486,73 @@ function updateHUD(){
 const cvs = $('map'), ctx = cvs.getContext('2d');
 let dpr = 1;
 function resize(){
-  dpr = window.devicePixelRatio||1;
+  dpr = Math.min(window.devicePixelRatio||1, 2); // tope: 2x alcanza y ahorra GPU
   cvs.width  = Math.round(innerWidth*dpr);
   cvs.height = Math.round(innerHeight*dpr);
 }
 addEventListener('resize', resize); resize();
 
-function loop(){ draw(); requestAnimationFrame(loop); }
+let camX=0, camY=0, camH=0, camOn=false;
+function loop(ts){
+  if(!loop.last || ts-loop.last>=32){ loop.last=ts; draw(); } // ~30 fps alcanza (GPS es 1 Hz)
+  requestAnimationFrame(loop);
+}
 function draw(){
   const W=cvs.width, H=cvs.height;
   ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle='#0C120D'; ctx.fillRect(0,0,W,H);
   if(!S.pos){ return; }
 
+  // la cámara persigue suave al tractor (sin saltos entre fixes del GPS)
+  if(!camOn){ camX=S.pos.x; camY=S.pos.y; camH=S.heading; camOn=true; }
+  camX += (S.pos.x-camX)*0.15; camY += (S.pos.y-camY)*0.15;
+  let dh = S.heading-camH; dh = Math.atan2(Math.sin(dh), Math.cos(dh));
+  camH += dh*0.15;
+
   const s = S.zoom*dpr;
-  const rot = S.courseUp ? -S.heading : 0;
+  const rot = S.courseUp ? -camH : 0;
   const cx=W/2, cy=H*0.68; // tractor centrado en el tercio inferior
+  const R = Math.hypot(W,H)/(2*s) + 15; // radio visible en metros
 
   ctx.save();
   ctx.translate(cx,cy); ctx.rotate(rot); ctx.scale(s,-s);
-  ctx.translate(-S.pos.x, -S.pos.y);
+  ctx.translate(-camX, -camY);
 
   // grilla de referencia cada 50 m
-  const view = Math.max(W,H)/s;
   ctx.strokeStyle='rgba(143,163,145,0.10)'; ctx.lineWidth=1/s;
-  const g0x=Math.floor((S.pos.x-view)/50)*50, g1x=S.pos.x+view;
-  const g0y=Math.floor((S.pos.y-view)/50)*50, g1y=S.pos.y+view;
   ctx.beginPath();
-  for(let gx=g0x; gx<=g1x; gx+=50){ ctx.moveTo(gx,S.pos.y-view); ctx.lineTo(gx,S.pos.y+view); }
-  for(let gy=g0y; gy<=g1y; gy+=50){ ctx.moveTo(S.pos.x-view,gy); ctx.lineTo(S.pos.x+view,gy); }
+  for(let gx=Math.floor((camX-R)/50)*50; gx<=camX+R; gx+=50){ ctx.moveTo(gx,camY-R); ctx.lineTo(gx,camY+R); }
+  for(let gy=Math.floor((camY-R)/50)*50; gy<=camY+R; gy+=50){ ctx.moveTo(camX-R,gy); ctx.lineTo(camX+R,gy); }
   ctx.stroke();
 
-  // cobertura pintada
-  if(pcan) ctx.drawImage(pcan, -EXT, -EXT, EXT*2, EXT*2);
+  // cobertura pintada: solo la porción visible del lienzo grande
+  if(pcan){
+    const x0=Math.max(-EXT,camX-R), x1=Math.min(EXT,camX+R);
+    const y0=Math.max(-EXT,camY-R), y1=Math.min(EXT,camY+R);
+    if(x1>x0 && y1>y0){
+      ctx.drawImage(pcan,
+        (x0+EXT)/CELL, (y0+EXT)/CELL, (x1-x0)/CELL, (y1-y0)/CELL,
+        x0, y0, x1-x0, y1-y0);
+    }
+  }
 
-  // líneas de guiado
+  // líneas de guiado: solo el tramo visible de cada una
   if(S.ab){
     const {a,u,n}=S.ab;
-    const gg=guidance(), cur=gg?gg.pass:0, L=4000;
+    const gg=guidance(), cur=gg?gg.pass:0;
+    const span = Math.min(9, Math.ceil(R/S.width)+1);
     // la línea próxima al tractor se "activa": continua y gruesa; verde si está encima
     const onLine = gg && gg.dist <= Math.max(S.width*0.05,0.05)*1.25;
-    for(let k=cur-9;k<=cur+9;k++){
+    for(let k=cur-span;k<=cur+span;k++){
       const px=a.x+n.x*k*S.width, py=a.y+n.y*k*S.width;
+      const t=(camX-px)*u.x+(camY-py)*u.y;
       const isCur = k===cur;
       ctx.strokeStyle = isCur ? (onLine ? '#5BD46C' : '#F2A93B') : 'rgba(242,169,59,0.22)';
       ctx.lineWidth = (isCur?3.4:1.1)/S.zoom;
       ctx.setLineDash(isCur?[]:[6/S.zoom,8/S.zoom]);
       ctx.beginPath();
-      ctx.moveTo(px-u.x*L, py-u.y*L);
-      ctx.lineTo(px+u.x*L, py+u.y*L);
+      ctx.moveTo(px+u.x*(t-R), py+u.y*(t-R));
+      ctx.lineTo(px+u.x*(t+R), py+u.y*(t+R));
       ctx.stroke();
     }
     ctx.setLineDash([]);
@@ -546,6 +572,16 @@ function draw(){
   // implemento (barra detrás del tractor) + tractor
   const hvx=Math.sin(S.heading), hvy=Math.cos(S.heading);
   const rvx=hvy, rvy=-hvx, hw=S.width/2;
+
+  // proyección del rumbo: línea punteada hacia adelante desde el centro del tractor
+  ctx.strokeStyle='rgba(233,239,233,0.75)';
+  ctx.lineWidth=1.6/S.zoom;
+  ctx.setLineDash([6/S.zoom, 7/S.zoom]);
+  ctx.beginPath();
+  ctx.moveTo(S.pos.x+hvx*3.5, S.pos.y+hvy*3.5);
+  ctx.lineTo(S.pos.x+hvx*(R+10), S.pos.y+hvy*(R+10));
+  ctx.stroke();
+  ctx.setLineDash([]);
   const ipx=S.pos.x-hvx*HITCH, ipy=S.pos.y-hvy*HITCH;
   // el ícono del tractor nunca baja de ~35 px en pantalla, aunque se aleje el zoom
   const kk = Math.max(1, 7.5/S.zoom);
