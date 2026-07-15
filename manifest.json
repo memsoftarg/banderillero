@@ -1,0 +1,15 @@
+{
+  "name": "Banderillero GPS",
+  "short_name": "Banderillero",
+  "description": "Guía satelital para pulverización y siembra: línea A-B, cobertura y solape",
+  "start_url": ".",
+  "scope": ".",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#0C120D",
+  "theme_color": "#0C120D",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

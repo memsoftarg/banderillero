@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0C120D">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<script>
+if ("serviceWorker" in navigator) {
+  addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+</script>
+</head>
+<body>
+<meta charset="utf-8">
+<title>Banderillero GPS</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<style>
+  :root{
+    --bg:#0C120D; --panel:#141C15; --panel2:#1B241C; --line:#2A362B;
+    --text:#E9EFE9; --muted:#8FA391;
+    --green:#3FA34D; --green-bright:#5BD46C; --red:#E04338; --amber:#F2A93B;
+    --led-off:#232D24;
+  }
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    overflow:hidden; -webkit-user-select:none; user-select:none;
+    touch-action:manipulation; overscroll-behavior:none;
+  }
+  #map{position:fixed; inset:0; width:100%; height:100%; display:block; background:var(--bg)}
+
+  /* ---------- barra de luces ---------- */
+  #topbar{
+    position:fixed; top:0; left:0; right:0; z-index:10;
+    background:linear-gradient(to bottom, rgba(12,18,13,.96), rgba(12,18,13,.82));
+    border-bottom:1px solid var(--line);
+    padding:max(6px, env(safe-area-inset-top)) 10px 8px;
+    display:flex; flex-direction:column; align-items:center; gap:4px;
+  }
+  #leds{display:flex; gap:5px; align-items:center}
+  .led{width:16px; height:16px; border-radius:50%; background:var(--led-off); transition:background .1s, box-shadow .1s}
+  .led.center{width:20px; height:20px; border:1px solid var(--line)}
+  .led.on-g{background:var(--green-bright); box-shadow:0 0 8px var(--green-bright)}
+  .led.on-a{background:var(--amber); box-shadow:0 0 8px var(--amber)}
+  .led.on-r{background:var(--red); box-shadow:0 0 8px var(--red)}
+  #xteRow{display:flex; align-items:baseline; gap:10px; min-height:44px}
+  #xteArrow{font-size:30px; font-weight:800; width:34px; text-align:center}
+  #xteVal{font-size:38px; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:-.5px; line-height:1}
+  #xteUnit{font-size:15px; color:var(--muted); font-weight:600}
+  #passLbl{font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em}
+
+  /* ---------- stats ---------- */
+  #stats{
+    position:fixed; left:8px; bottom:calc(86px + env(safe-area-inset-bottom)); z-index:10;
+    background:rgba(20,28,21,.9); border:1px solid var(--line); border-radius:10px;
+    padding:8px 10px; font-size:13px; line-height:1.55; font-variant-numeric:tabular-nums;
+  }
+  #stats b{font-weight:700}
+  #stats .u{color:var(--muted); font-size:11px}
+  #gpsdot{display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; background:var(--muted)}
+
+  /* ---------- botones laterales ---------- */
+  #side{position:fixed; right:8px; bottom:calc(96px + env(safe-area-inset-bottom)); z-index:10; display:flex; flex-direction:column; gap:8px}
+  .sbtn{
+    width:46px; height:46px; border-radius:10px; border:1px solid var(--line);
+    background:rgba(20,28,21,.9); color:var(--text); font-size:20px; font-weight:700;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .sbtn:active{background:var(--panel2)}
+
+  /* ---------- barra inferior ---------- */
+  #controls{
+    position:fixed; left:0; right:0; bottom:0; z-index:10;
+    background:linear-gradient(to top, rgba(12,18,13,.97), rgba(12,18,13,.88));
+    border-top:1px solid var(--line);
+    padding:10px 10px calc(10px + env(safe-area-inset-bottom));
+    display:flex; gap:8px; align-items:stretch;
+  }
+  .btn{
+    flex:1; min-height:58px; border-radius:12px; border:1px solid var(--line);
+    background:var(--panel2); color:var(--text); font-size:16px; font-weight:700;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+  }
+  .btn small{font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.06em}
+  .btn:active{filter:brightness(1.25)}
+  .btn:disabled{opacity:.4}
+  #paintBtn{flex:1.4; background:#1E3322; border-color:#2F4A33}
+  #paintBtn.on{background:var(--green); border-color:var(--green-bright); color:#08140A}
+  #paintBtn.on small{color:#0E2A13}
+  #abBtn.done{border-color:var(--amber)}
+
+  /* ---------- volante demo ---------- */
+  #steer{position:fixed; left:0; right:0; bottom:calc(86px + env(safe-area-inset-bottom)); z-index:9; display:none; justify-content:center; gap:120px; pointer-events:none}
+  .steerbtn{
+    pointer-events:auto; width:76px; height:76px; border-radius:50%;
+    border:2px solid var(--line); background:rgba(20,28,21,.85); color:var(--text);
+    font-size:32px; font-weight:800;
+  }
+  .steerbtn:active{background:var(--amber); color:#1A1206; border-color:var(--amber)}
+
+  /* ---------- aviso ---------- */
+  #toast{
+    position:fixed; top:110px; left:50%; transform:translateX(-50%); z-index:20;
+    background:var(--panel); border:1px solid var(--amber); border-radius:10px;
+    padding:10px 16px; font-size:14px; max-width:86vw; text-align:center;
+    display:none;
+  }
+
+  /* ---------- pantalla inicial / ajustes ---------- */
+  .sheet{
+    position:fixed; inset:0; z-index:30; background:rgba(8,12,9,.94);
+    display:flex; align-items:center; justify-content:center; padding:20px;
+  }
+  .card{width:100%; max-width:420px; background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:22px; max-height:88vh; overflow-y:auto}
+  .card h1{margin:0 0 2px; font-size:24px; letter-spacing:-.02em}
+  .card h2{margin:0 0 14px; font-size:13px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.08em}
+  .field{margin:16px 0}
+  .field label{display:block; font-size:13px; color:var(--muted); margin-bottom:6px}
+  .widthRow{display:flex; gap:8px; align-items:center}
+  .widthRow input{
+    flex:1; background:var(--bg); border:1px solid var(--line); border-radius:10px;
+    color:var(--text); font-size:26px; font-weight:800; text-align:center; padding:10px;
+    font-variant-numeric:tabular-nums; min-width:0;
+  }
+  .widthRow button{width:56px; height:56px; font-size:26px; font-weight:800; border-radius:10px; border:1px solid var(--line); background:var(--panel2); color:var(--text)}
+  .big{
+    width:100%; min-height:58px; border-radius:12px; border:none; margin-top:10px;
+    font-size:17px; font-weight:800; color:#08140A; background:var(--green);
+  }
+  .big.alt{background:var(--panel2); color:var(--text); border:1px solid var(--line)}
+  .big.danger{background:transparent; color:var(--red); border:1px solid var(--red)}
+  .big:active{filter:brightness(1.2)}
+  .note{font-size:12.5px; color:var(--muted); line-height:1.5; margin-top:14px}
+  .note b{color:var(--text)}
+  #settings{display:none}
+</style>
+
+<canvas id="map"></canvas>
+
+<div id="topbar">
+  <div id="leds"></div>
+  <div id="xteRow">
+    <span id="xteArrow"></span>
+    <span id="xteVal">–</span>
+    <span id="xteUnit"></span>
+  </div>
+  <div id="passLbl">Sin línea A–B</div>
+</div>
+
+<div id="stats">
+  <div><span id="gpsdot"></span><b id="stSpeed">0.0</b> <span class="u">km/h</span> · ±<b id="stAcc">–</b> <span class="u">m</span></div>
+  <div><b id="stHa">0.00</b> <span class="u">ha</span> · <b id="stOv">0.0</b><span class="u">% solape</span></div>
+</div>
+
+<div id="side">
+  <button class="sbtn" id="zoomIn">＋</button>
+  <button class="sbtn" id="zoomOut">－</button>
+  <button class="sbtn" id="rotBtn" title="Orientación">▲</button>
+</div>
+
+<div id="steer">
+  <button class="steerbtn" id="stL">⟲</button>
+  <button class="steerbtn" id="stR">⟳</button>
+</div>
+
+<div id="toast"></div>
+
+<div id="controls">
+  <button class="btn" id="abBtn"><span>Marcar A</span><small>línea guía</small></button>
+  <button class="btn" id="paintBtn"><span>PINTAR</span><small>apagado</small></button>
+  <button class="btn" id="cfgBtn" style="flex:.55"><span>⚙</span><small>ajustes</small></button>
+</div>
+
+<div class="sheet" id="setup">
+  <div class="card">
+    <h1>Banderillero GPS</h1>
+    <h2>Guía satelital para pulverización y siembra</h2>
+    <div class="field">
+      <label>Ancho de labor (metros)</label>
+      <div class="widthRow">
+        <button id="wMinus">－</button>
+        <input id="widthInp" type="number" inputmode="decimal" step="0.5" min="1" max="60" value="12">
+        <button id="wPlus">＋</button>
+      </div>
+    </div>
+    <button class="big" id="startGps">Iniciar con GPS</button>
+    <button class="big alt" id="startDemo">Probar en modo demo</button>
+    <p class="note">
+      <b>Cómo se usa:</b> arrancá en la cabecera, marcá <b>A</b>, avanzá derecho hasta el
+      final de la pasada y marcá <b>B</b>. La barra de luces te indica hacia dónde corregir.
+      Activá <b>PINTAR</b> con el botalón abierto: lo cubierto queda verde y el solape en rojo.
+      <br><br><b>Precisión:</b> el GPS del celular tiene un error típico de 2–5 m. Sirve para
+      pulverización con botalones anchos; para más precisión se puede vincular un receptor
+      GPS externo por Bluetooth.
+    </p>
+  </div>
+</div>
+
+<div class="sheet" id="settings">
+  <div class="card">
+    <h1>Ajustes</h1>
+    <h2 id="modeLbl">Modo GPS</h2>
+    <div class="field">
+      <label>Ancho de labor (metros)</label>
+      <div class="widthRow">
+        <button id="wMinus2">－</button>
+        <input id="widthInp2" type="number" inputmode="decimal" step="0.5" min="1" max="60">
+        <button id="wPlus2">＋</button>
+      </div>
+    </div>
+    <button class="big alt" id="closeCfg">Volver al mapa</button>
+    <button class="big danger" id="resetAB">Borrar línea A–B</button>
+    <button class="big danger" id="resetPaint">Borrar todo lo pintado</button>
+    <p class="note">
+      <b>Consejo:</b> desde el menú del navegador usá <b>“Agregar a pantalla de inicio”</b>
+      para instalarla como app y verla a pantalla completa. Mantené el teléfono con buena
+      vista del cielo (soporte en el parabrisas). Área máxima de trabajo: ~1,9 × 1,9 km
+      alrededor del punto de inicio.
+    </p>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ================= estado ================= */
+const CELL = 0.75;               // m por celda de cobertura
+const GRID = 2560;               // celdas por lado (~1.9 km)
+const HALF = GRID/2;
+const EXT  = HALF*CELL;          // semiancho del área en m
+const OVERLAP_T = 8;             // s: re-pintar una celda después de esto = solape
+const HITCH = 4;                 // m: distancia del implemento detrás del tractor
+
+const S = {
+  width: parseFloat(localStorage.getItem('bg_width')) || 12,
+  pos: null,            // {x,y} m (x este, y norte)
+  heading: 0,           // rad desde el norte, horario
+  speed: 0,             // m/s
+  acc: null,            // precisión GPS m
+  painting: false,
+  A: null, B: null, ab: null,   // ab: {a,u,n}
+  demo: false, started: false,
+  zoom: 7,              // px CSS por metro
+  courseUp: true,
+  areaCells: 0, overlapCells: 0,
+};
+
+let origin = null, lastPaint = null, t0 = performance.now();
+let cov = null, lt = null;      // Uint8 cobertura, Uint32 último sello (s)
+let pcan = null, pctx = null;   // canvas de pintado (1 px = 1 celda)
+
+/* ================= util ================= */
+const $ = id => document.getElementById(id);
+const clamp = (v,a,b)=>Math.min(b,Math.max(a,v));
+function toast(msg, ms){
+  const t=$('toast'); t.textContent=msg; t.style.display='block';
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.style.display='none', ms||3000);
+}
+
+function llToXY(lat, lon){
+  if(!origin){
+    origin = {lat, lon, kx: 111320*Math.cos(lat*Math.PI/180), ky: 110540};
+  }
+  return { x:(lon-origin.lon)*origin.kx, y:(lat-origin.lat)*origin.ky };
+}
+
+/* ================= cobertura ================= */
+function initGrid(){
+  cov = new Uint8Array(GRID*GRID);
+  lt  = new Uint32Array(GRID*GRID);
+  pcan = document.createElement('canvas'); pcan.width = GRID; pcan.height = GRID;
+  pctx = pcan.getContext('2d');
+}
+
+function stamp(p1, p2, w){
+  const dx=p2.x-p1.x, dy=p2.y-p1.y, len=Math.hypot(dx,dy);
+  if(len < 0.03) return;
+  const ux=dx/len, uy=dy/len, nx=-uy, ny=ux, hw=w/2;
+  const pad = 0.35;
+  const xs=[p1.x+nx*hw,p1.x-nx*hw,p2.x+nx*hw,p2.x-nx*hw];
+  const ys=[p1.y+ny*hw,p1.y-ny*hw,p2.y+ny*hw,p2.y-ny*hw];
+  const cx0=clamp(Math.floor(Math.min(...xs)/CELL)+HALF,0,GRID-1);
+  const cx1=clamp(Math.floor(Math.max(...xs)/CELL)+HALF,0,GRID-1);
+  const cy0=clamp(Math.floor(Math.min(...ys)/CELL)+HALF,0,GRID-1);
+  const cy1=clamp(Math.floor(Math.max(...ys)/CELL)+HALF,0,GRID-1);
+  const ns = Math.round((performance.now()-t0)/1000);
+  let g=[], r=[];
+  for(let cy=cy0; cy<=cy1; cy++){
+    const wy=(cy-HALF+0.5)*CELL;
+    for(let cx=cx0; cx<=cx1; cx++){
+      const wx=(cx-HALF+0.5)*CELL;
+      const ddx=wx-p1.x, ddy=wy-p1.y;
+      const a=ddx*ux+ddy*uy;
+      if(a<-pad || a>len+pad) continue;
+      const b=ddx*nx+ddy*ny;
+      if(Math.abs(b)>hw) continue;
+      const i=cy*GRID+cx;
+      if(cov[i]===0){ cov[i]=1; S.areaCells++; g.push(cx,cy); }
+      else if(cov[i]===1 && ns-lt[i]>OVERLAP_T){ cov[i]=2; S.overlapCells++; r.push(cx,cy); }
+      lt[i]=ns;
+    }
+  }
+  if(g.length){ pctx.fillStyle='rgba(63,163,77,0.85)';
+    for(let k=0;k<g.length;k+=2) pctx.fillRect(g[k],g[k+1],1,1); }
+  if(r.length){ pctx.fillStyle='#E04338';
+    for(let k=0;k<r.length;k+=2) pctx.fillRect(r[k],r[k+1],1,1); }
+}
+
+/* ================= posición ================= */
+function implPos(){
+  // punto medio de la barra del implemento, HITCH m detrás del tractor
+  return { x: S.pos.x - Math.sin(S.heading)*HITCH, y: S.pos.y - Math.cos(S.heading)*HITCH };
+}
+
+function onFix(x, y, meta){
+  meta = meta||{};
+  if(S.pos){
+    const dx=x-S.pos.x, dy=y-S.pos.y, d=Math.hypot(dx,dy);
+    if(meta.heading!=null && !isNaN(meta.heading) && (meta.speed||0)>0.4){
+      S.heading = meta.heading*Math.PI/180;
+    } else if(d>0.25){
+      S.heading = Math.atan2(dx,dy);
+    }
+    if(meta.speed!=null && !isNaN(meta.speed)) S.speed = meta.speed;
+    else {
+      const dt=(performance.now()-(onFix._t||0))/1000;
+      if(dt>0.05) S.speed = S.speed*0.5 + (d/dt)*0.5;
+    }
+    // suavizado leve
+    x = S.pos.x + (x-S.pos.x)*0.7;
+    y = S.pos.y + (y-S.pos.y)*0.7;
+  }
+  onFix._t = performance.now();
+  S.pos = {x,y};
+  if(Math.max(Math.abs(x),Math.abs(y)) > EXT-60 && !onFix._warned){
+    onFix._warned = true;
+    toast('Estás cerca del límite del área de trabajo (1,9 km del inicio)', 6000);
+  }
+  if(S.painting){
+    const ip = implPos(); // se pinta desde la barra del implemento
+    if(!lastPaint) lastPaint = ip;
+    else {
+      const d=Math.hypot(ip.x-lastPaint.x, ip.y-lastPaint.y);
+      if(d>=0.3){ stamp(lastPaint, ip, S.width); lastPaint = ip; }
+    }
+  }
+  updateHUD();
+}
+
+/* ================= guiado A–B ================= */
+function setAB(){
+  const dx=S.B.x-S.A.x, dy=S.B.y-S.A.y, len=Math.hypot(dx,dy);
+  if(len<3){ toast('A y B están muy cerca (mínimo 3 m). Volvé a marcar B más lejos.'); S.B=null; return false; }
+  const ux=dx/len, uy=dy/len;
+  S.ab = { a:{...S.A}, u:{x:ux,y:uy}, n:{x:-uy,y:ux} }; // n = izquierda de u
+  return true;
+}
+
+function guidance(){
+  if(!S.ab || !S.pos) return null;
+  const {a,u,n} = S.ab;
+  const dx=S.pos.x-a.x, dy=S.pos.y-a.y;
+  const lat = dx*n.x + dy*n.y;              // + = a la izquierda de la línea AB
+  const pass = Math.round(lat/S.width);
+  const err = lat - pass*S.width;           // m fuera de la pasada objetivo
+  // ¿la línea objetivo queda a la derecha o izquierda del tractor?
+  const corrX = -err*n.x, corrY = -err*n.y; // vector hacia la línea
+  const rvx = Math.cos(S.heading), rvy = -Math.sin(S.heading); // derecha del rumbo
+  const right = (corrX*rvx + corrY*rvy) > 0;
+  return { err, dist:Math.abs(err), pass, steerRight:right };
+}
+
+/* ================= HUD ================= */
+const NLED = 15, CLED = 7;
+const ledsEl = $('leds');
+for(let i=0;i<NLED;i++){
+  const d=document.createElement('div');
+  d.className='led'+(i===CLED?' center':'');
+  ledsEl.appendChild(d);
+}
+const ledEls = ledsEl.children;
+
+function updateHUD(){
+  $('stSpeed').textContent = (S.speed*3.6).toFixed(1);
+  $('stAcc').textContent = S.acc==null ? '–' : S.acc.toFixed(0);
+  const dot=$('gpsdot');
+  dot.style.background = S.demo ? 'var(--amber)' :
+    S.acc==null ? 'var(--muted)' : S.acc<4 ? 'var(--green-bright)' : S.acc<10 ? 'var(--amber)' : 'var(--red)';
+  $('stHa').textContent = (S.areaCells*CELL*CELL/10000).toFixed(2);
+  $('stOv').textContent = S.areaCells ? (S.overlapCells/S.areaCells*100).toFixed(1) : '0.0';
+
+  const g = guidance();
+  for(let i=0;i<NLED;i++) ledEls[i].className = 'led'+(i===CLED?' center':'');
+  if(!g){
+    $('xteArrow').textContent=''; $('xteVal').textContent='–'; $('xteUnit').textContent='';
+    $('passLbl').textContent = S.A && !S.B ? 'Avanzá y marcá B' : 'Sin línea A–B';
+    return;
+  }
+  const step = Math.max(S.width*0.05, 0.05);
+  const cnt = clamp(Math.ceil(g.dist/step - 0.25), 0, 7);
+  if(cnt===0){
+    ledEls[CLED].classList.add('on-g');
+    ledEls[CLED-1].classList.add('on-g'); ledEls[CLED+1].classList.add('on-g');
+    $('xteArrow').textContent='✓';
+    $('xteArrow').style.color='var(--green-bright)';
+  } else {
+    const dir = g.steerRight ? 1 : -1;
+    for(let k=1;k<=cnt;k++){
+      const idx = CLED + dir*k;
+      ledEls[idx].classList.add(k<=2?'on-g':k<=5?'on-a':'on-r');
+    }
+    $('xteArrow').textContent = g.steerRight ? '→' : '←';
+    $('xteArrow').style.color = cnt<=2 ? 'var(--green-bright)' : cnt<=5 ? 'var(--amber)' : 'var(--red)';
+  }
+  if(g.dist<1){ $('xteVal').textContent=(g.dist*100).toFixed(0); $('xteUnit').textContent='cm'; }
+  else { $('xteVal').textContent=g.dist.toFixed(1); $('xteUnit').textContent='m'; }
+  $('passLbl').textContent = 'Pasada '+g.pass;
+}
+
+/* ================= dibujo ================= */
+const cvs = $('map'), ctx = cvs.getContext('2d');
+let dpr = 1;
+function resize(){
+  dpr = window.devicePixelRatio||1;
+  cvs.width  = Math.round(innerWidth*dpr);
+  cvs.height = Math.round(innerHeight*dpr);
+}
+addEventListener('resize', resize); resize();
+
+function loop(){ draw(); requestAnimationFrame(loop); }
+function draw(){
+  const W=cvs.width, H=cvs.height;
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle='#0C120D'; ctx.fillRect(0,0,W,H);
+  if(!S.pos){ return; }
+
+  const s = S.zoom*dpr;
+  const rot = S.courseUp ? -S.heading : 0;
+  const cx=W/2, cy=H*0.68; // tractor centrado en el tercio inferior
+
+  ctx.save();
+  ctx.translate(cx,cy); ctx.rotate(rot); ctx.scale(s,-s);
+  ctx.translate(-S.pos.x, -S.pos.y);
+
+  // grilla de referencia cada 50 m
+  const view = Math.max(W,H)/s;
+  ctx.strokeStyle='rgba(143,163,145,0.10)'; ctx.lineWidth=1/s;
+  const g0x=Math.floor((S.pos.x-view)/50)*50, g1x=S.pos.x+view;
+  const g0y=Math.floor((S.pos.y-view)/50)*50, g1y=S.pos.y+view;
+  ctx.beginPath();
+  for(let gx=g0x; gx<=g1x; gx+=50){ ctx.moveTo(gx,S.pos.y-view); ctx.lineTo(gx,S.pos.y+view); }
+  for(let gy=g0y; gy<=g1y; gy+=50){ ctx.moveTo(S.pos.x-view,gy); ctx.lineTo(S.pos.x+view,gy); }
+  ctx.stroke();
+
+  // cobertura pintada
+  if(pcan) ctx.drawImage(pcan, -EXT, -EXT, EXT*2, EXT*2);
+
+  // líneas de guiado
+  if(S.ab){
+    const {a,u,n}=S.ab;
+    const gg=guidance(), cur=gg?gg.pass:0, L=4000;
+    // la línea próxima al tractor se "activa": continua y gruesa; verde si está encima
+    const onLine = gg && gg.dist <= Math.max(S.width*0.05,0.05)*1.25;
+    for(let k=cur-9;k<=cur+9;k++){
+      const px=a.x+n.x*k*S.width, py=a.y+n.y*k*S.width;
+      const isCur = k===cur;
+      ctx.strokeStyle = isCur ? (onLine ? '#5BD46C' : '#F2A93B') : 'rgba(242,169,59,0.22)';
+      ctx.lineWidth = (isCur?3.4:1.1)/S.zoom;
+      ctx.setLineDash(isCur?[]:[6/S.zoom,8/S.zoom]);
+      ctx.beginPath();
+      ctx.moveTo(px-u.x*L, py-u.y*L);
+      ctx.lineTo(px+u.x*L, py+u.y*L);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+
+  // marcadores A y B
+  for(const [pt,lbl] of [[S.A,'A'],[S.B,'B']]){
+    if(!pt) continue;
+    ctx.fillStyle='#F2A93B';
+    ctx.beginPath(); ctx.arc(pt.x,pt.y,5/S.zoom,0,7); ctx.fill();
+    ctx.save(); ctx.translate(pt.x,pt.y); ctx.scale(1/s,-1/s); ctx.rotate(-rot);
+    ctx.fillStyle='#F2A93B'; ctx.font='bold '+(13*dpr)+'px system-ui';
+    ctx.fillText(lbl, 8*dpr, -8*dpr);
+    ctx.restore();
+  }
+
+  // implemento (barra detrás del tractor) + tractor
+  const hvx=Math.sin(S.heading), hvy=Math.cos(S.heading);
+  const rvx=hvy, rvy=-hvx, hw=S.width/2;
+  const ipx=S.pos.x-hvx*HITCH, ipy=S.pos.y-hvy*HITCH;
+  // el ícono del tractor nunca baja de ~35 px en pantalla, aunque se aleje el zoom
+  const kk = Math.max(1, 7.5/S.zoom);
+  const q=(f,r)=>[S.pos.x+hvx*f*kk+rvx*r*kk, S.pos.y+hvy*f*kk+rvy*r*kk];
+  const poly=(pts,fill)=>{
+    ctx.fillStyle=fill; ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+    for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+    ctx.closePath(); ctx.fill();
+  };
+  // barra de enganche
+  ctx.strokeStyle='rgba(233,239,233,0.6)'; ctx.lineWidth=1.4/S.zoom;
+  ctx.beginPath();
+  const hb=q(-1.6,0);
+  ctx.moveTo(hb[0], hb[1]);
+  ctx.lineTo(ipx, ipy);
+  ctx.stroke();
+  // barra del implemento (ancho de labor completo)
+  ctx.strokeStyle = S.painting ? '#5BD46C' : 'rgba(233,239,233,0.55)';
+  ctx.lineWidth=3.2/S.zoom;
+  ctx.beginPath();
+  ctx.moveTo(ipx-rvx*hw, ipy-rvy*hw);
+  ctx.lineTo(ipx+rvx*hw, ipy+rvy*hw);
+  ctx.stroke();
+  ctx.lineWidth=1.6/S.zoom;
+  for(const sg of [-1,1]){
+    ctx.beginPath();
+    ctx.moveTo(ipx+sg*rvx*hw - hvx*1.0, ipy+sg*rvy*hw - hvy*1.0);
+    ctx.lineTo(ipx+sg*rvx*hw + hvx*1.0, ipy+sg*rvy*hw + hvy*1.0);
+    ctx.stroke();
+  }
+  // tractor: ruedas, cuerpo con trompa, cabina
+  poly([q(-1.6,0.75),q(-1.6,1.3),q(-0.1,1.3),q(-0.1,0.75)],'#59655A');
+  poly([q(-1.6,-0.75),q(-1.6,-1.3),q(-0.1,-1.3),q(-0.1,-0.75)],'#59655A');
+  poly([q(1.2,0.65),q(1.2,1.1),q(2.1,1.1),q(2.1,0.65)],'#59655A');
+  poly([q(1.2,-0.65),q(1.2,-1.1),q(2.1,-1.1),q(2.1,-0.65)],'#59655A');
+  poly([q(2.8,0),q(2.2,0.7),q(-1.8,0.7),q(-1.8,-0.7),q(2.2,-0.7)],'#E9EFE9');
+  poly([q(0.7,0.55),q(-1.2,0.55),q(-1.2,-0.55),q(0.7,-0.55)],'#F2A93B');
+
+  ctx.restore();
+
+  // brújula (norte en pantalla)
+  const na = Math.atan2(-Math.cos(rot), Math.sin(rot)); // ángulo pantalla del vector norte
+  const bx=W-34*dpr, by=(118)*dpr, br=14*dpr;
+  ctx.strokeStyle='rgba(233,239,233,0.4)'; ctx.lineWidth=1.2*dpr;
+  ctx.beginPath(); ctx.arc(bx,by,br,0,7); ctx.stroke();
+  const nx2=Math.cos(na), ny2=Math.sin(na);
+  ctx.strokeStyle='#E04338'; ctx.lineWidth=2*dpr;
+  ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(bx+nx2*br*0.8, by+ny2*br*0.8); ctx.stroke();
+  ctx.fillStyle='rgba(233,239,233,0.7)'; ctx.font='bold '+(9*dpr)+'px system-ui';
+  ctx.textAlign='center';
+  ctx.fillText('N', bx+nx2*br*1.9, by+ny2*br*1.9+3*dpr);
+  ctx.textAlign='left';
+}
+requestAnimationFrame(loop);
+
+/* ================= GPS ================= */
+function startGPS(){
+  if(!navigator.geolocation){ toast('Este dispositivo no tiene GPS disponible en el navegador'); return; }
+  navigator.geolocation.watchPosition(p=>{
+    S.acc = p.coords.accuracy;
+    const {x,y} = llToXY(p.coords.latitude, p.coords.longitude);
+    onFix(x, y, {speed:p.coords.speed, heading:p.coords.heading});
+  }, e=>{
+    toast(e.code===1 ? 'Permiso de ubicación denegado. Activalo en el navegador.' : 'Error de GPS: '+e.message, 6000);
+  }, {enableHighAccuracy:true, maximumAge:0, timeout:20000});
+}
+
+/* ================= demo ================= */
+let steerDir = 0, demoH = 0, demoP = {x:0, y:0};
+function demoTick(){
+  if(!S.demo) return;
+  const dt=0.15, v=5;
+  demoH += steerDir*1.0*dt;
+  demoP.x += Math.sin(demoH)*v*dt;
+  demoP.y += Math.cos(demoH)*v*dt;
+  onFix(demoP.x, demoP.y, {speed:v});
+}
+setInterval(demoTick, 150);
+for(const [id,d] of [['stL',-1],['stR',1]]){
+  const b=$(id);
+  const on=e=>{e.preventDefault(); steerDir=d;};
+  const off=e=>{e.preventDefault(); if(steerDir===d) steerDir=0;};
+  b.addEventListener('touchstart',on,{passive:false}); b.addEventListener('touchend',off);
+  b.addEventListener('mousedown',on); b.addEventListener('mouseup',off); b.addEventListener('mouseleave',off);
+}
+
+/* ================= wake lock ================= */
+let wakeLock=null;
+async function keepAwake(){
+  try{ wakeLock = await navigator.wakeLock.request('screen'); }catch(e){}
+}
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden && S.started) keepAwake(); });
+
+/* ================= controles ================= */
+function syncWidthInputs(){
+  $('widthInp').value = S.width; $('widthInp2').value = S.width;
+}
+function setWidth(v){
+  v = clamp(parseFloat(v)||S.width, 1, 60);
+  S.width = Math.round(v*2)/2;
+  localStorage.setItem('bg_width', S.width);
+  syncWidthInputs(); updateHUD();
+}
+for(const [id,d] of [['wMinus',-0.5],['wPlus',0.5],['wMinus2',-0.5],['wPlus2',0.5]])
+  $(id).addEventListener('click', ()=>setWidth(S.width+d));
+$('widthInp').addEventListener('change', e=>setWidth(e.target.value));
+$('widthInp2').addEventListener('change', e=>setWidth(e.target.value));
+
+function start(demo){
+  S.demo = demo; S.started = true;
+  initGrid();
+  $('setup').style.display='none';
+  $('modeLbl').textContent = demo ? 'Modo demo (sin GPS)' : 'Modo GPS';
+  if(demo){
+    $('steer').style.display='flex';
+    S.acc=null; onFix(0,0,{speed:0});
+    toast('Demo: mantené apretado ⟲ ⟳ para doblar. Marcá A, avanzá y marcá B.', 6000);
+  } else {
+    startGPS();
+    toast('Buscando señal GPS… salí a cielo abierto.', 5000);
+  }
+  keepAwake();
+}
+$('startGps').addEventListener('click', ()=>start(false));
+$('startDemo').addEventListener('click', ()=>start(true));
+
+const abBtn = $('abBtn');
+function abLabel(){
+  const sp=abBtn.querySelector('span'), sm=abBtn.querySelector('small');
+  if(!S.A){ sp.textContent='Marcar A'; sm.textContent='línea guía'; abBtn.classList.remove('done'); }
+  else if(!S.B){ sp.textContent='Marcar B'; sm.textContent='al final de la pasada'; abBtn.classList.remove('done'); }
+  else { sp.textContent='A–B ✓'; sm.textContent='fijada'; abBtn.classList.add('done'); }
+}
+abBtn.addEventListener('click', ()=>{
+  if(!S.pos){ toast('Esperando posición GPS…'); return; }
+  if(!S.A){ S.A={...S.pos}; toast('Punto A marcado. Avanzá derecho hasta el final y marcá B.'); }
+  else if(!S.B){ S.B={...S.pos}; if(setAB()) toast('Línea A–B fijada. Guiado activo.'); }
+  else { toast('Para cambiar la línea A–B entrá a Ajustes.'); }
+  abLabel(); updateHUD();
+});
+
+const paintBtn = $('paintBtn');
+paintBtn.addEventListener('click', ()=>{
+  S.painting = !S.painting;
+  lastPaint = S.painting && S.pos ? implPos() : null;
+  paintBtn.classList.toggle('on', S.painting);
+  paintBtn.querySelector('small').textContent = S.painting ? 'pintando' : 'apagado';
+});
+
+$('cfgBtn').addEventListener('click', ()=>{ syncWidthInputs(); $('settings').style.display='flex'; });
+$('closeCfg').addEventListener('click', ()=>{ $('settings').style.display='none'; });
+$('resetAB').addEventListener('click', ()=>{
+  S.A=null; S.B=null; S.ab=null; abLabel(); updateHUD();
+  $('settings').style.display='none'; toast('Línea A–B borrada. Marcá A de nuevo.');
+});
+$('resetPaint').addEventListener('click', ()=>{
+  if(!confirm('¿Borrar toda la cobertura pintada?')) return;
+  cov.fill(0); lt.fill(0); pctx.clearRect(0,0,GRID,GRID);
+  S.areaCells=0; S.overlapCells=0; lastPaint = S.painting && S.pos ? implPos() : null;
+  $('settings').style.display='none'; updateHUD();
+});
+
+$('zoomIn').addEventListener('click', ()=>{ S.zoom=clamp(S.zoom*1.4,0.6,40); });
+$('zoomOut').addEventListener('click', ()=>{ S.zoom=clamp(S.zoom/1.4,0.6,40); });
+$('rotBtn').addEventListener('click', ()=>{
+  S.courseUp=!S.courseUp;
+  $('rotBtn').textContent = S.courseUp ? '▲' : 'N';
+  toast(S.courseUp ? 'Rumbo arriba' : 'Norte arriba', 1500);
+});
+
+// pellizco para zoom
+let pinch0=null;
+cvs.addEventListener('touchstart', e=>{
+  if(e.touches.length===2){
+    pinch0={d:Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY), z:S.zoom};
+  }
+},{passive:true});
+cvs.addEventListener('touchmove', e=>{
+  if(pinch0 && e.touches.length===2){
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+    S.zoom=clamp(pinch0.z*d/pinch0.d,0.6,40);
+    e.preventDefault();
+  }
+},{passive:false});
+cvs.addEventListener('touchend', ()=>{ pinch0=null; });
+
+syncWidthInputs(); abLabel(); updateHUD();
+
+// gancho de depuración
+window.BG = {S, onFix, stamp, guidance, draw, demoPos:demoP, get demoH(){return demoH}, set demoH(v){demoH=v}};
+})();
+</script>
+
+</body>
+</html>
