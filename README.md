@@ -17,6 +17,8 @@ montado en el tractor. App web de un solo archivo, instalable (PWA) y 100% offli
   de referencia para drenajes o curvas de nivel
 - Las líneas se marcan como hechas solas, midiendo cuánto quedó cubierto por el trabajo
 - Botón de vista general: encuadra el lote entero para ver de un vistazo qué falta
+- Guiado hacia una línea elegida: te lleva a la punta más cercana y después te mantiene encima
+- Terminar el trabajo y volver al inicio sin cerrar la app
 - Exportar el trabajo a KMZ para abrirlo en Google Earth: lo aplicado como imagen sobre el
   terreno, las líneas con su estado, la línea A-B y el resumen de hectáreas y solape
 - Modo demo con volante para probar sin GPS

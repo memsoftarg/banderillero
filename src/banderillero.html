@@ -5,7 +5,7 @@
   :root{
     --bg:#0C120D; --panel:#141C15; --panel2:#1B241C; --line:#2A362B;
     --text:#E9EFE9; --muted:#8FA391;
-    --green:#3FA34D; --green-bright:#5BD46C; --red:#E04338; --amber:#F2A93B;
+    --green:#3FA34D; --green-bright:#2BFF88; --red:#FF3B2F; --amber:#FFD400;
     --led-off:#232D24;
   }
   html,body{height:100%}
@@ -89,7 +89,7 @@
 
   /* ---------- aviso ---------- */
   #toast{
-    position:fixed; top:110px; left:50%; transform:translateX(-50%); z-index:20;
+    position:fixed; top:110px; left:50%; transform:translateX(-50%); z-index:40;
     background:var(--panel); border:1px solid var(--amber); border-radius:10px;
     padding:10px 16px; font-size:14px; max-width:86vw; text-align:center;
     display:none;
@@ -231,6 +231,19 @@
   </div>
 </div>
 
+<div class="sheet" id="expSheet" style="display:none">
+  <div class="card">
+    <h1>Trabajo listo</h1>
+    <h2>Elegí qué hacer con el archivo</h2>
+    <p class="note" id="expResumen" style="margin-top:0"></p>
+    <button class="big" id="expShare">📤 Enviar por mail o WhatsApp</button>
+    <button class="big alt" id="expDl">⬇ Guardar en el teléfono</button>
+    <button class="big alt" id="expClose">Volver</button>
+    <p class="note">El archivo se abre en <b>Google Earth</b> en la computadora: vas a ver
+      por dónde pasaste, las líneas hechas y las hectáreas.</p>
+  </div>
+</div>
+
 <div class="sheet" id="settings">
   <div class="card">
     <h1>Ajustes</h1>
@@ -256,6 +269,7 @@
     </div>
     <button class="big" id="exportBtn">📤 Exportar trabajo (KMZ)</button>
     <button class="big alt" id="closeCfg">Volver al mapa</button>
+    <button class="big danger" id="terminarBtn">Terminar y volver al inicio</button>
     <button class="big danger geoQuitar" style="display:none">Quitar mapa del lote</button>
     <button class="big danger" id="resetMark">Borrar punto 📍</button>
     <button class="big danger" id="resetAB">Borrar línea A–B</button>
@@ -286,6 +300,7 @@ const S = {
   pos: null,            // {x,y} m (x este, y norte)
   heading: 0,           // rad desde el norte, horario
   speed: 0,             // m/s
+  giro: 0,              // rad/s: cuánto viene girando, para predecir entre fixes
   acc: null,            // precisión GPS m
   painting: false,
   A: null, B: null, ab: null,   // ab: {a,u,n}
@@ -294,6 +309,8 @@ const S = {
   zoom: 7,              // px CSS por metro
   courseUp: true,
   vista: false,          // vista general de todo el lote (la cámara deja de seguir al tractor)
+  guia: null,            // {i, fase} línea elegida para ir a hacerla
+  guiaNombre: '',
   areaCells: 0, overlapCells: 0,
 };
 
@@ -501,10 +518,20 @@ function onFix(x, y, meta){
   if(lastRaw){
     const dx=x-lastRaw.x, dy=y-lastRaw.y, d=Math.hypot(dx,dy);
     const dtf=(now-lastRaw.t)/1000;
+    let nuevoRumbo = null;
     if(meta.heading!=null && !isNaN(meta.heading) && (meta.speed||0)>0.4){
-      S.heading = meta.heading*Math.PI/180;
+      nuevoRumbo = meta.heading*Math.PI/180;
     } else if(d>0.25){
-      S.heading = Math.atan2(dx,dy);
+      nuevoRumbo = Math.atan2(dx,dy);
+    }
+    if(nuevoRumbo!=null){
+      // cuánto giró por segundo, para seguir girando entre fixes
+      if(dtf>0.05 && dtf<3){
+        let dh = nuevoRumbo - S.heading;
+        dh = Math.atan2(Math.sin(dh), Math.cos(dh));
+        S.giro = clamp(S.giro*0.35 + (dh/dtf)*0.65, -1.2, 1.2);
+      }
+      S.heading = nuevoRumbo;
     }
     if(meta.speed!=null && !isNaN(meta.speed)) S.speed = meta.speed;
     else if(dtf>0.05) S.speed = S.speed*0.4 + (d/dtf)*0.6;
@@ -557,6 +584,8 @@ function setAB(){
 }
 
 function guidance(){
+  const gl = guiaLinea();
+  if(gl) return gl;
   if(!S.ab || !S.pos) return null;
   const {a,u,n} = S.ab;
   const dx=S.pos.x-a.x, dy=S.pos.y-a.y;
@@ -628,7 +657,7 @@ function actualizarProgreso(){
 }
 function colorLinea(f){
   const p = f.hecho || 0;
-  return p>=HECHA ? '#5BD46C' : (p>=EMPEZADA ? '#F2A93B' : '#4FC3F7');
+  return p>=HECHA ? '#2BFF88' : (p>=EMPEZADA ? '#FFD400' : '#00E5FF');
 }
 function contarLineas(){
   if(!geo) return null;
@@ -662,6 +691,16 @@ function listaLineas(){
     izq.innerHTML = '<b style="color:'+colorLinea(f)+'">●</b> ' +
       (f.nombre || ('Línea '+(i+1))) +
       ' <span class="u">' + Math.round((f.hecho||0)*100) + '%</span>';
+    const acciones = document.createElement('span');
+    acciones.style.cssText = 'display:flex; gap:6px; flex:none';
+    const elegida = S.guia && S.guia.i === geo.figs.indexOf(f);
+    const ir = document.createElement('button');
+    ir.textContent = elegida ? 'Guiando' : 'Ir';
+    if(elegida) ir.style.cssText = 'background:var(--amber); color:#1A1206; border-color:var(--amber)';
+    ir.addEventListener('click', ()=>{
+      if(elegida) { soltarLinea(); listaLineas(); }
+      else elegirLinea(geo.figs.indexOf(f));
+    });
     const b = document.createElement('button');
     b.textContent = hecha ? 'Pendiente' : 'Hecha';
     b.addEventListener('click', ()=>{
@@ -669,7 +708,8 @@ function listaLineas(){
       f.hecho = f.manual ? 1 : 0;
       guardarEstadoLineas(); listaLineas(); updateHUD();
     });
-    fila.appendChild(izq); fila.appendChild(b);
+    acciones.appendChild(ir); acciones.appendChild(b);
+    fila.appendChild(izq); fila.appendChild(acciones);
     cont.appendChild(fila);
   });
 }
@@ -786,7 +826,7 @@ async function cargarMapa(file){
 }
 
 function quitarMapa(){
-  geo = null;
+  geo = null; S.guia = null; S.guiaNombre = '';
   localStorage.removeItem('bg_geo');
   syncGeoUI(); listaLineas();
   toast('Mapa del lote quitado.');
@@ -958,21 +998,111 @@ async function exportarTrabajo(){
     const nombre = 'Banderillero '+ahora.toISOString().slice(0,10)+' '+
       String(ahora.getHours()).padStart(2,'0')+String(ahora.getMinutes()).padStart(2,'0')+
       ' ('+ha.toFixed(1)+' ha).kmz';
-    const file = new File([zip], nombre, {type:'application/vnd.google-earth.kmz'});
-
-    if(navigator.canShare && navigator.canShare({files:[file]})){
-      await navigator.share({files:[file], title:'Trabajo del Banderillero'});
-    }else{
-      const a=document.createElement('a');
-      a.href=URL.createObjectURL(zip); a.download=nombre;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(()=>URL.revokeObjectURL(a.href), 8000);
-      toast('Archivo descargado: '+nombre, 5000);
-    }
+    // Queda listo y se pregunta qué hacer con él. Enviar tiene que salir de un
+    // toque del usuario: llamado después de preparar el archivo, el navegador
+    // lo rechaza porque ya perdió el gesto.
+    expArchivo = { zip, nombre };
+    $('expResumen').innerHTML = resumen.replace(/\n/g,'<br>');
+    $('settings').style.display = 'none';
+    $('expSheet').style.display = 'flex';
   }catch(e){
-    if(e && e.name === 'AbortError') return;    // cerró el menú de compartir
-    toast('No pude exportar: '+e.message, 6000);
+    alert('No pude preparar el archivo.\n\n' + (e && e.message ? e.message : e));
   }
+}
+
+let expArchivo = null;
+function expCompartir(){
+  if(!expArchivo) return;
+  const file = new File([expArchivo.zip], expArchivo.nombre,
+                        {type:'application/vnd.google-earth.kmz'});
+  if(!(navigator.canShare && navigator.canShare({files:[file]}))){
+    toast('Este teléfono no deja enviar archivos desde el navegador. Usá "Guardar en el teléfono".', 6500);
+    return;
+  }
+  navigator.share({files:[file], title:'Trabajo del Banderillero'})
+    .then(()=>{ $('expSheet').style.display='none'; })
+    .catch(e=>{ if(e && e.name!=='AbortError') toast('No se pudo enviar: '+e.message, 6000); });
+}
+function expDescargar(){
+  if(!expArchivo) return;
+  try{
+    const url = URL.createObjectURL(expArchivo.zip);
+    const a = document.createElement('a');
+    a.href = url; a.download = expArchivo.nombre; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 20000);
+    $('expSheet').style.display='none';
+    toast('Guardado en Descargas: '+expArchivo.nombre, 6000);
+  }catch(e){
+    toast('No se pudo guardar: '+e.message, 6000);
+  }
+}
+
+/* ============ guiado por una línea elegida ============
+   Se elige un drenaje o una curva de la lista y la app primero te lleva hasta
+   la punta más cercana, y una vez ahí te mantiene arriba de la línea. */
+function figGuia(){
+  if(!S.guia || !geo || !geoListo()) return null;
+  const f = geo.figs[S.guia.i];
+  return (f && f.pts && f.pts.length>1) ? f : null;
+}
+// punto de la polilínea más cercano a p, con el segmento donde cayó
+function cercaDeLinea(p, pts){
+  let mejor = {d2:Infinity};
+  for(let i=1;i<pts.length;i++){
+    const a=pts[i-1], b=pts[i];
+    const vx=b.x-a.x, vy=b.y-a.y, L2=vx*vx+vy*vy;
+    let t = L2>0 ? ((p.x-a.x)*vx+(p.y-a.y)*vy)/L2 : 0;
+    t = clamp(t,0,1);
+    const qx=a.x+vx*t, qy=a.y+vy*t;
+    const d2=(p.x-qx)*(p.x-qx)+(p.y-qy)*(p.y-qy);
+    if(d2<mejor.d2) mejor = {d2, x:qx, y:qy, vx, vy, L2};
+  }
+  return mejor;
+}
+function elegirLinea(i){
+  const f = geo && geo.figs[i];
+  if(!f || !f.pts) return;
+  S.guia = { i, fase:'ir' };
+  S.guiaNombre = f.nombre || ('Línea '+(i+1));
+  $('settings').style.display='none';
+  toast('Guiando hacia "'+S.guiaNombre+'". Te lleva a la punta más cercana.', 5000);
+  updateHUD();
+}
+function soltarLinea(){
+  S.guia = null; S.guiaNombre = '';
+  toast('Guiado por línea desactivado. Vuelve la línea A–B.', 3500);
+  updateHUD();
+}
+function guiaLinea(){
+  const f = figGuia();
+  if(!f || !S.pos) return null;
+  const pts = f.pts;
+  const puntaA = pts[0], puntaB = pts[pts.length-1];
+  const dA = Math.hypot(S.pos.x-puntaA.x, S.pos.y-puntaA.y);
+  const dB = Math.hypot(S.pos.x-puntaB.x, S.pos.y-puntaB.y);
+  const punta = dA<=dB ? puntaA : puntaB;
+  const cerca = cercaDeLinea(S.pos, pts);
+  const lateral = Math.sqrt(cerca.d2);
+
+  // se pasa a seguir la línea cuando ya se está encima, y se vuelve si se aleja
+  if(S.guia.fase==='ir' && lateral < 6) S.guia.fase='sobre';
+  else if(S.guia.fase==='sobre' && lateral > 35) S.guia.fase='ir';
+
+  if(S.guia.fase==='ir'){
+    const dist = Math.min(dA, dB);
+    // error como desvío respecto del rumbo que apunta a la punta
+    const rumboObj = Math.atan2(punta.x-S.pos.x, punta.y-S.pos.y);
+    let dh = rumboObj - S.heading;
+    dh = Math.atan2(Math.sin(dh), Math.cos(dh));
+    return { dist, err:dist, steerRight: dh>0, modo:'ir',
+             etiqueta: S.guiaNombre+' · a '+(dist>=1000 ? (dist/1000).toFixed(2)+' km' : dist.toFixed(0)+' m') };
+  }
+  // sobre la línea: desvío perpendicular, igual que con A–B
+  const rvx = Math.cos(S.heading), rvy = -Math.sin(S.heading);   // derecha del rumbo
+  const hx = cerca.x-S.pos.x, hy = cerca.y-S.pos.y;
+  return { dist: lateral, err: lateral, steerRight: (hx*rvx + hy*rvy) > 0, modo:'sobre',
+           etiqueta: S.guiaNombre };
 }
 
 /* ================= HUD ================= */
@@ -1013,7 +1143,8 @@ function updateHUD(){
     $('passLbl').textContent = S.A && !S.B ? 'Avanzá y marcá B' : 'Sin línea A–B';
     return;
   }
-  const step = Math.max(S.width*0.05, 0.05);
+  // yendo hacia la línea la escala es de metros gruesos; encima de ella, fina
+  const step = g.modo==='ir' ? Math.max(g.dist/40, 2) : Math.max(S.width*0.05, 0.05);
   const cnt = clamp(Math.ceil(g.dist/step - 0.25), 0, 7);
   if(cnt===0){
     ledEls[CLED].classList.add('on-g');
@@ -1029,9 +1160,10 @@ function updateHUD(){
     $('xteArrow').textContent = g.steerRight ? '→' : '←';
     $('xteArrow').style.color = cnt<=2 ? 'var(--green-bright)' : cnt<=5 ? 'var(--amber)' : 'var(--red)';
   }
-  if(g.dist<1){ $('xteVal').textContent=(g.dist*100).toFixed(0); $('xteUnit').textContent='cm'; }
+  if(g.modo==='ir'){ $('xteVal').textContent=g.dist.toFixed(0); $('xteUnit').textContent='m'; }
+  else if(g.dist<1){ $('xteVal').textContent=(g.dist*100).toFixed(0); $('xteUnit').textContent='cm'; }
   else { $('xteVal').textContent=g.dist.toFixed(1); $('xteUnit').textContent='m'; }
-  $('passLbl').textContent = 'Pasada '+g.pass;
+  $('passLbl').textContent = g.etiqueta || ('Pasada '+g.pass);
 }
 
 /* ================= dibujo ================= */
@@ -1046,17 +1178,23 @@ addEventListener('resize', resize); resize();
 
 let camX=0, camY=0, camH=0, camOn=false;
 function loop(ts){
-  if(!loop.last || ts-loop.last>=32){
-    // predicción entre fixes: la posición avanza con el rumbo y la velocidad
-    // actuales, y onFix la corrige cuando llega el dato real del GPS (1 Hz)
+  if(!loop.last || ts-loop.last>=15){
+    // Predicción entre fixes. El GPS del celular manda una posición por segundo:
+    // en el medio se sigue avanzando con el rumbo y la velocidad estimados, y
+    // además se sigue girando con la velocidad de giro medida, que es lo que
+    // hace que la barra de luces reaccione en la cabecera y no un segundo tarde.
     const dt = Math.min((ts-(loop.last||ts))/1000, 0.3);
     loop.last = ts;
     if(S.started && S.pos && S.speed>0.4){
+      if(Math.abs(S.giro) > 0.002){
+        S.heading += S.giro*dt;
+        S.giro *= Math.pow(0.5, dt/1.2);      // el giro estimado se va apagando
+      }
       S.pos.x += Math.sin(S.heading)*S.speed*dt;
       S.pos.y += Math.cos(S.heading)*S.speed*dt;
     }
     draw();
-    if(!loop.hud || ts-loop.hud>=120){ loop.hud=ts; if(S.started) updateHUD(); }
+    if(!loop.hud || ts-loop.hud>=50){ loop.hud=ts; if(S.started) updateHUD(); }
   }
   requestAnimationFrame(loop);
 }
@@ -1340,9 +1478,9 @@ function draw(){
   // la cámara persigue suave al tractor (sin saltos entre fixes del GPS)
   if(!camOn){ camX=S.pos.x; camY=S.pos.y; camH=S.heading; camOn=true; }
   if(!S.vista){                       // en la vista general la cámara queda quieta
-    camX += (S.pos.x-camX)*0.15; camY += (S.pos.y-camY)*0.15;
+    camX += (S.pos.x-camX)*0.35; camY += (S.pos.y-camY)*0.35;
     let dh = S.heading-camH; dh = Math.atan2(Math.sin(dh), Math.cos(dh));
-    camH += dh*0.15;
+    camH += dh*0.30;
   }
 
   const s = S.zoom*dpr;
@@ -1377,22 +1515,40 @@ function draw(){
   // mapa del lote: contornos en blanco, drenajes y curvas en celeste
   if(geoListo()){
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    for(const f of geo.figs){
-      if(!f.pts || f.pts.length<2) continue;
+    geo.figs.forEach((f, fi)=>{
+      if(!f.pts || f.pts.length<2) return;
       const b = f.bb;                       // fuera de pantalla: ni se dibuja
-      if(b.x1 < camX-R || b.x0 > camX+R || b.y1 < camY-R || b.y0 > camY+R) continue;
+      if(b.x1 < camX-R || b.x0 > camX+R || b.y1 < camY-R || b.y0 > camY+R) return;
+      const elegida = S.guia && S.guia.i === fi;
       ctx.beginPath();
       ctx.moveTo(f.pts[0].x, f.pts[0].y);
       for(let i=1;i<f.pts.length;i++) ctx.lineTo(f.pts[i].x, f.pts[i].y);
       if(f.tipo==='area'){
         ctx.closePath();
-        ctx.fillStyle = 'rgba(233,239,233,0.045)'; ctx.fill();
-        ctx.strokeStyle = 'rgba(233,239,233,0.8)'; ctx.lineWidth = 2.2/S.zoom;
+        ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fill();
+        ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 3.0/S.zoom;
+        ctx.stroke();
       }else{
+        if(elegida){                        // la que se está por hacer, resaltada
+          ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 9/S.zoom; ctx.stroke();
+        }
         // celeste = pendiente, ámbar = empezada, verde = hecha
-        ctx.strokeStyle = colorLinea(f); ctx.lineWidth = 2.6/S.zoom;
+        ctx.strokeStyle = colorLinea(f);
+        ctx.lineWidth = (elegida ? 5.0 : 3.6)/S.zoom;
+        ctx.stroke();
       }
-      ctx.stroke();
+    });
+    // yendo hacia la línea elegida: rastro punteado hasta la punta más cercana
+    const fg = figGuia();
+    if(fg && S.guia.fase==='ir' && S.pos){
+      const a=fg.pts[0], z=fg.pts[fg.pts.length-1];
+      const p = Math.hypot(S.pos.x-a.x,S.pos.y-a.y) <= Math.hypot(S.pos.x-z.x,S.pos.y-z.y) ? a : z;
+      ctx.setLineDash([9/S.zoom, 7/S.zoom]);
+      ctx.strokeStyle = '#FFD400'; ctx.lineWidth = 2.6/S.zoom;
+      ctx.beginPath(); ctx.moveTo(S.pos.x, S.pos.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#FFD400';
+      ctx.beginPath(); ctx.arc(p.x, p.y, 6/S.zoom, 0, 7); ctx.fill();
     }
   }
 
@@ -1407,8 +1563,8 @@ function draw(){
       const px=a.x+n.x*k*S.width, py=a.y+n.y*k*S.width;
       const t=(camX-px)*u.x+(camY-py)*u.y;
       const isCur = k===cur;
-      ctx.strokeStyle = isCur ? (onLine ? '#5BD46C' : '#F2A93B') : 'rgba(242,169,59,0.22)';
-      ctx.lineWidth = (isCur?3.4:1.1)/S.zoom;
+      ctx.strokeStyle = isCur ? (onLine ? '#2BFF88' : '#FFD400') : 'rgba(255,212,0,0.30)';
+      ctx.lineWidth = (isCur?4.2:1.4)/S.zoom;
       ctx.setLineDash(isCur?[]:[6/S.zoom,8/S.zoom]);
       ctx.beginPath();
       ctx.moveTo(px+u.x*(t-R), py+u.y*(t-R));
@@ -1421,10 +1577,10 @@ function draw(){
   // marcadores A y B
   for(const [pt,lbl] of [[S.A,'A'],[S.B,'B']]){
     if(!pt) continue;
-    ctx.fillStyle='#F2A93B';
-    ctx.beginPath(); ctx.arc(pt.x,pt.y,5/S.zoom,0,7); ctx.fill();
+    ctx.fillStyle='#FFD400';
+    ctx.beginPath(); ctx.arc(pt.x,pt.y,5.5/S.zoom,0,7); ctx.fill();
     ctx.save(); ctx.translate(pt.x,pt.y); ctx.scale(1/s,-1/s); ctx.rotate(-rot);
-    ctx.fillStyle='#F2A93B'; ctx.font='bold '+(13*dpr)+'px system-ui';
+    ctx.fillStyle='#FFD400'; ctx.font='bold '+(14*dpr)+'px system-ui';
     ctx.fillText(lbl, 8*dpr, -8*dpr);
     ctx.restore();
   }
@@ -1480,7 +1636,7 @@ function draw(){
     ctx.closePath(); ctx.fill();
   }
   // barra principal
-  ctx.strokeStyle = S.painting ? '#5BD46C' : 'rgba(233,239,233,0.6)';
+  ctx.strokeStyle = S.painting ? '#2BFF88' : 'rgba(233,239,233,0.6)';
   ctx.lineWidth = 3.6/S.zoom;
   ctx.beginPath();
   ctx.moveTo(ipx-rvx*hw, ipy-rvy*hw);
@@ -1496,7 +1652,7 @@ function draw(){
   }
   // boquillas repartidas a lo largo del botalón
   const nz = clamp(Math.round(S.width/1.5), 4, 20);
-  ctx.fillStyle = S.painting ? '#9BEBA6' : 'rgba(180,196,182,0.75)';
+  ctx.fillStyle = S.painting ? '#C8FFDA' : 'rgba(180,196,182,0.75)';
   for(let i=0;i<=nz;i++){
     const t = (i/nz - 0.5)*S.width;
     const bx = ipx+rvx*t, by = ipy+rvy*t;
@@ -1597,7 +1753,7 @@ $('widthInp').addEventListener('change', e=>setWidth(e.target.value));
 $('widthInp2').addEventListener('change', e=>setWidth(e.target.value));
 
 function start(demo, resumed){
-  S.demo = demo; S.started = true;
+  S.demo = demo; S.started = true; S.giro = 0;
   initGrid();
   $('setup').style.display='none';
   $('modeLbl').textContent = demo ? 'Modo demo (sin GPS)' : 'Modo GPS';
@@ -1675,6 +1831,23 @@ paintBtn.addEventListener('click', ()=>{
 $('cfgBtn').addEventListener('click', ()=>{ syncWidthInputs(); listaLineas(); $('settings').style.display='flex'; });
 $('closeCfg').addEventListener('click', ()=>{ $('settings').style.display='none'; });
 $('exportBtn').addEventListener('click', exportarTrabajo);
+$('expShare').addEventListener('click', expCompartir);
+$('expDl').addEventListener('click', expDescargar);
+$('expClose').addEventListener('click', ()=>{ $('expSheet').style.display='none'; });
+$('terminarBtn').addEventListener('click', ()=>{
+  if(!confirm('¿Terminar el trabajo y volver al inicio?\n\nQueda guardado: al volver a entrar vas a poder retomarlo.')) return;
+  const b = $('terminarBtn'), txt = b.textContent;
+  b.disabled = true; b.textContent = 'Guardando…';
+  // se recarga recién cuando el guardado terminó, con un margen para que llegue
+  // al disco: si se recarga antes, se pierde el trabajo del día
+  saveWork()
+    .then(()=> new Promise(r=>setTimeout(r, 500)))
+    .then(()=> location.reload())
+    .catch(()=>{
+      b.disabled = false; b.textContent = txt;
+      if(confirm('No pude guardar el trabajo.\n\n¿Volver al inicio igual? Se pierde lo hecho.')) location.reload();
+    });
+});
 $('resetMark').addEventListener('click', ()=>{
   S.mark=null; updateHUD(); saveWork().catch(()=>{});
   $('settings').style.display='none'; toast('Punto 📍 borrado.');
