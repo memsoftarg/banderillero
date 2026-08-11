@@ -12,6 +12,7 @@ montado en el tractor. App web de un solo archivo, instalable (PWA) y 100% offli
 - Barra de luces con desvío en cm/m respecto de la pasada activa
 - Pintado de cobertura desde la barra del implemento; el solape se marca en rojo
 - Hectáreas trabajadas, % de solape, velocidad y precisión GPS
+- Tractor dibujado a escala con el botalón, las boquillas y la baliza de aplicación
 - Modo demo con volante para probar sin GPS
 - Funciona sin señal: el GPS no usa datos y el service worker deja la app instalada
 
@@ -27,7 +28,7 @@ montado en el tractor. App web de un solo archivo, instalable (PWA) y 100% offli
 - `sw.js`, `manifest.json`, `icon-*.png` — PWA/offline
 - `src/banderillero.html` — código fuente de la app
 - `src/build.sh` — regenera `index.html` desde la fuente
-- `src/make_icons.py` — regenera los íconos
+- `src/make_icons.py` — íconos originales (los actuales se generaron a partir del logo)
 
 ## Precisión
 
