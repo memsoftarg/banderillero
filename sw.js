@@ -1,5 +1,5 @@
 /* Service worker del Banderillero GPS: deja la app disponible sin conexión. */
-const CACHE = 'banderillero-v5';
+const CACHE = 'banderillero-v6';
 const FILES = ['.', 'index.html', 'manifest.json', 'icon-192.png', 'icon-512.png',
                'icon-maskable-192.png', 'icon-maskable-512.png'];
 

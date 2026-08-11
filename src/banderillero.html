@@ -277,13 +277,35 @@ function initGrid(){
   pctx = pcan.getContext('2d');
 }
 
-function stamp(p1, p2, w){
+// ¿el punto cae dentro del triángulo A-B-C? (sirve con cualquier orientación)
+function enTri(px,py, ax,ay, bx,by, cx,cy){
+  const d1=(px-bx)*(ay-by)-(ax-bx)*(py-by);
+  const d2=(px-cx)*(by-cy)-(bx-cx)*(py-cy);
+  const d3=(px-ax)*(cy-ay)-(cx-ax)*(py-ay);
+  return !(((d1<0)||(d2<0)||(d3<0)) && ((d1>0)||(d2>0)||(d3>0)));
+}
+
+/* Sella la franja que barrió la barra del implemento entre dos posiciones.
+   Usa el rumbo de cada extremo: al girar en la cabecera la barra rota, y lo
+   que cubre es un trapecio, no un rectángulo. Sellando un rectángulo quedaban
+   cuñas sin pintar del lado de afuera de la curva. */
+function stamp(p1, p2, w, h1, h2){
   const dx=p2.x-p1.x, dy=p2.y-p1.y, len=Math.hypot(dx,dy);
   if(len < 0.03) return;
-  const ux=dx/len, uy=dy/len, nx=-uy, ny=ux, hw=w/2;
-  const pad = 0.35;
-  const xs=[p1.x+nx*hw,p1.x-nx*hw,p2.x+nx*hw,p2.x-nx*hw];
-  const ys=[p1.y+ny*hw,p1.y-ny*hw,p2.y+ny*hw,p2.y-ny*hw];
+  const hw=w/2, pad=0.3;
+  if(h1==null) h1 = Math.atan2(dx,dy);
+  if(h2==null) h2 = h1;
+  // avance y costado derecho de cada extremo, según su propio rumbo
+  const a1x=Math.sin(h1), a1y=Math.cos(h1), r1x=a1y, r1y=-a1x;
+  const a2x=Math.sin(h2), a2y=Math.cos(h2), r2x=a2y, r2y=-a2x;
+  // se estira un poco a lo largo para que no queden costuras entre sellos
+  const q1x=p1.x-a1x*pad, q1y=p1.y-a1y*pad;
+  const q2x=p2.x+a2x*pad, q2y=p2.y+a2y*pad;
+  const Ax=q1x+r1x*hw, Ay=q1y+r1y*hw;    // punta derecha de la barra en p1
+  const Bx=q2x+r2x*hw, By=q2y+r2y*hw;    // punta derecha en p2
+  const Cx=q2x-r2x*hw, Cy=q2y-r2y*hw;    // punta izquierda en p2
+  const Dx=q1x-r1x*hw, Dy=q1y-r1y*hw;    // punta izquierda en p1
+  const xs=[Ax,Bx,Cx,Dx], ys=[Ay,By,Cy,Dy];
   const cx0=clamp(Math.floor(Math.min(...xs)/CELL)+HALF,0,GRID-1);
   const cx1=clamp(Math.floor(Math.max(...xs)/CELL)+HALF,0,GRID-1);
   const cy0=clamp(Math.floor(Math.min(...ys)/CELL)+HALF,0,GRID-1);
@@ -294,11 +316,9 @@ function stamp(p1, p2, w){
     const wy=(cy-HALF+0.5)*CELL;
     for(let cx=cx0; cx<=cx1; cx++){
       const wx=(cx-HALF+0.5)*CELL;
-      const ddx=wx-p1.x, ddy=wy-p1.y;
-      const a=ddx*ux+ddy*uy;
-      if(a<-pad || a>len+pad) continue;
-      const b=ddx*nx+ddy*ny;
-      if(Math.abs(b)>hw) continue;
+      // el trapecio se prueba como dos triángulos: así vale aunque el giro
+      // sea tan cerrado que la punta de adentro quede por detrás
+      if(!(enTri(wx,wy, Ax,Ay, Bx,By, Cx,Cy) || enTri(wx,wy, Ax,Ay, Cx,Cy, Dx,Dy))) continue;
       const i=cy*GRID+cx;
       if(cov[i]===0){ cov[i]=1; S.areaCells++; g.push(cx,cy); }
       else if(cov[i]===1 && ns-lt[i]>OVERLAP_T){ cov[i]=2; S.overlapCells++; r.push(cx,cy); }
@@ -403,6 +423,11 @@ function implPos(){
   // punto medio de la barra del implemento, HITCH m detrás del tractor
   return { x: S.pos.x - Math.sin(S.heading)*HITCH, y: S.pos.y - Math.cos(S.heading)*HITCH };
 }
+// desde dónde retomar el sellado: posición de la barra y hacia dónde apuntaba
+function paintAnchor(){
+  if(!S.painting || !S.pos) return null;
+  const p = implPos(); p.h = S.heading; return p;
+}
 
 let lastRaw = null;
 function onFix(x, y, meta){
@@ -431,10 +456,13 @@ function onFix(x, y, meta){
   }
   if(S.painting){
     const ip = implPos(); // se pinta desde la barra del implemento
-    if(!lastPaint) lastPaint = ip;
+    if(!lastPaint) lastPaint = {x:ip.x, y:ip.y, h:S.heading};
     else {
       const d=Math.hypot(ip.x-lastPaint.x, ip.y-lastPaint.y);
-      if(d>=0.3){ stamp(lastPaint, ip, S.width); lastPaint = ip; }
+      if(d>=0.3){
+        stamp(lastPaint, ip, S.width, lastPaint.h, S.heading);
+        lastPaint = {x:ip.x, y:ip.y, h:S.heading};
+      }
     }
   }
   updateHUD();
@@ -1111,7 +1139,7 @@ abBtn.addEventListener('click', ()=>{
 const paintBtn = $('paintBtn');
 paintBtn.addEventListener('click', ()=>{
   S.painting = !S.painting;
-  lastPaint = S.painting && S.pos ? implPos() : null;
+  lastPaint = paintAnchor();
   paintBtn.classList.toggle('on', S.painting);
   paintBtn.querySelector('small').textContent = S.painting ? 'pintando' : 'apagado';
 });
@@ -1129,7 +1157,7 @@ $('resetAB').addEventListener('click', ()=>{
 $('resetPaint').addEventListener('click', ()=>{
   if(!confirm('¿Borrar toda la cobertura pintada?')) return;
   cov.fill(0); lt.fill(0); pctx.clearRect(0,0,GRID,GRID);
-  S.areaCells=0; S.overlapCells=0; lastPaint = S.painting && S.pos ? implPos() : null;
+  S.areaCells=0; S.overlapCells=0; lastPaint = paintAnchor();
   $('settings').style.display='none'; updateHUD(); saveWork().catch(()=>{});
 });
 
