@@ -55,6 +55,7 @@
     display:flex; align-items:center; justify-content:center;
   }
   .sbtn:active{background:var(--panel2)}
+  .sbtn.on{background:var(--amber); color:#1A1206; border-color:var(--amber)}
 
   /* ---------- barra inferior ---------- */
   #controls{
@@ -165,6 +166,7 @@
 <div id="side">
   <button class="sbtn" id="zoomIn">＋</button>
   <button class="sbtn" id="zoomOut">－</button>
+  <button class="sbtn" id="verLote" title="Ver todo el lote">🗺</button>
   <button class="sbtn" id="rotBtn" title="Orientación">▲</button>
   <button class="sbtn" id="markBtn" title="Guardar posición">📍</button>
 </div>
@@ -218,7 +220,8 @@
       si te salís; las líneas, en celeste. Si instalaste la app, también podés mandarte el
       archivo por mail o WhatsApp y usar <b>Compartir → Banderillero</b>: se abre con el lote
       ya cargado. Las líneas se pintan de verde solas a medida que las vas haciendo, y en
-      Ajustes ves cuáles faltan.
+      Ajustes ves cuáles faltan. El botón <b>🗺</b> te muestra el lote entero de un vistazo,
+      con lo hecho en verde y lo que falta en celeste; tocalo de nuevo para volver al tractor.
       <br><br><b>Al terminar:</b> desde Ajustes, <b>Exportar trabajo</b> te arma un archivo
       para abrir en Google Earth en la computadora, con lo aplicado, las hectáreas y el solape.
       <br><br><b>Precisión:</b> el GPS del celular tiene un error típico de 2–5 m. Sirve para
@@ -290,11 +293,13 @@ const S = {
   demo: false, started: false,
   zoom: 7,              // px CSS por metro
   courseUp: true,
+  vista: false,          // vista general de todo el lote (la cámara deja de seguir al tractor)
   areaCells: 0, overlapCells: 0,
 };
 
 let origin = null, lastPaint = null, dirty = false, t0 = performance.now();
 let cov = null, lt = null;      // Uint8 cobertura, Uint32 último sello (s)
+let covBB = null;               // recuadro de celdas pintadas: {x0,y0,x1,y1}
 let pcan = null, pctx = null;   // canvas de pintado (1 px = 1 celda)
 
 /* ================= util ================= */
@@ -316,6 +321,7 @@ function llToXY(lat, lon){
 function initGrid(){
   cov = new Uint8Array(GRID*GRID);
   lt  = new Uint32Array(GRID*GRID);
+  covBB = null;
   pcan = document.createElement('canvas'); pcan.width = GRID; pcan.height = GRID;
   pctx = pcan.getContext('2d');
 }
@@ -363,7 +369,14 @@ function stamp(p1, p2, w, h1, h2){
       // sea tan cerrado que la punta de adentro quede por detrás
       if(!(enTri(wx,wy, Ax,Ay, Bx,By, Cx,Cy) || enTri(wx,wy, Ax,Ay, Cx,Cy, Dx,Dy))) continue;
       const i=cy*GRID+cx;
-      if(cov[i]===0){ cov[i]=1; S.areaCells++; g.push(cx,cy); }
+      if(cov[i]===0){
+        cov[i]=1; S.areaCells++; g.push(cx,cy);
+        if(!covBB) covBB={x0:cx,y0:cy,x1:cx,y1:cy};
+        else{
+          if(cx<covBB.x0)covBB.x0=cx; if(cx>covBB.x1)covBB.x1=cx;
+          if(cy<covBB.y0)covBB.y0=cy; if(cy>covBB.y1)covBB.y1=cy;
+        }
+      }
       else if(cov[i]===1 && ns-lt[i]>OVERLAP_T){ cov[i]=2; S.overlapCells++; r.push(cx,cy); }
       lt[i]=ns;
     }
@@ -456,6 +469,14 @@ function resumeWork(w){
   pctx.fillStyle='#E04338';
   for(let i=0;i<w.idxs.length;i++) if(w.sts[i]===2){
     const idx=w.idxs[i]; cov[idx]=2; pctx.fillRect(idx%GRID,(idx/GRID)|0,1,1);
+  }
+  for(let i=0;i<w.idxs.length;i++){
+    const idx=w.idxs[i], cx=idx%GRID, cy=(idx/GRID)|0;
+    if(!covBB) covBB={x0:cx,y0:cy,x1:cx,y1:cy};
+    else{
+      if(cx<covBB.x0)covBB.x0=cx; if(cx>covBB.x1)covBB.x1=cx;
+      if(cy<covBB.y0)covBB.y0=cy; if(cy>covBB.y1)covBB.y1=cy;
+    }
   }
   abLabel(); updateHUD();
   toast('Trabajo retomado: '+(S.areaCells*CELL*CELL/10000).toFixed(2)+' ha. Se sigue guardando solo.', 5000);
@@ -846,13 +867,8 @@ const coordKml = p => { const [la,lo]=xy2ll(p); return lo.toFixed(7)+','+la.toFi
 
 // recorta lo pintado a lo realmente usado y lo devuelve con el norte arriba
 function imagenCobertura(){
-  let x0=GRID, y0=GRID, x1=-1, y1=-1;
-  for(let cy=0; cy<GRID; cy++) for(let cx=0; cx<GRID; cx++){
-    if(!cov[cy*GRID+cx]) continue;
-    if(cx<x0)x0=cx; if(cx>x1)x1=cx;
-    if(cy<y0)y0=cy; if(cy>y1)y1=cy;
-  }
-  if(x1<0) return null;
+  if(!covBB) return null;
+  const {x0,y0,x1,y1} = covBB;
   const w=x1-x0+1, h=y1-y0+1;
   const c=document.createElement('canvas'); c.width=w; c.height=h;
   const g=c.getContext('2d');
@@ -1323,13 +1339,16 @@ function draw(){
 
   // la cámara persigue suave al tractor (sin saltos entre fixes del GPS)
   if(!camOn){ camX=S.pos.x; camY=S.pos.y; camH=S.heading; camOn=true; }
-  camX += (S.pos.x-camX)*0.15; camY += (S.pos.y-camY)*0.15;
-  let dh = S.heading-camH; dh = Math.atan2(Math.sin(dh), Math.cos(dh));
-  camH += dh*0.15;
+  if(!S.vista){                       // en la vista general la cámara queda quieta
+    camX += (S.pos.x-camX)*0.15; camY += (S.pos.y-camY)*0.15;
+    let dh = S.heading-camH; dh = Math.atan2(Math.sin(dh), Math.cos(dh));
+    camH += dh*0.15;
+  }
 
   const s = S.zoom*dpr;
   const rot = S.courseUp ? -camH : 0;
-  const cx=W/2, cy=H*0.68; // tractor centrado en el tercio inferior
+  const cx=W/2, cy=S.vista ? H*0.52 : H*0.68; // el tractor va en el tercio inferior;
+                                              // la vista general se centra
   const R = Math.hypot(W,H)/(2*s) + 15; // radio visible en metros
 
   ctx.save();
@@ -1680,8 +1699,46 @@ $('markBtn').addEventListener('click', ()=>{
   updateHUD(); saveWork().catch(()=>{});
 });
 
-$('zoomIn').addEventListener('click', ()=>{ S.zoom=clamp(S.zoom*1.4,0.6,40); });
-$('zoomOut').addEventListener('click', ()=>{ S.zoom=clamp(S.zoom/1.4,0.6,40); });
+$('zoomIn').addEventListener('click', ()=>{ salirVista(); S.zoom=clamp(S.zoom*1.4,0.6,40); });
+$('zoomOut').addEventListener('click', ()=>{ salirVista(); S.zoom=clamp(S.zoom/1.4,0.6,40); });
+
+/* Vista general: encuadra el lote entero con sus líneas y lo ya aplicado, para
+   ver de un vistazo qué falta. La cámara deja de seguir al tractor hasta salir. */
+let vistaPrev = null;
+function salirVista(){
+  if(!S.vista) return;
+  S.vista = false;
+  if(vistaPrev){ S.zoom = vistaPrev.zoom; S.courseUp = vistaPrev.courseUp; vistaPrev = null; }
+  camOn = false;                        // que la cámara vuelva de un salto al tractor
+  $('verLote').classList.remove('on');
+}
+function entrarVista(){
+  const W = cvs.width/dpr, H = cvs.height/dpr;
+  let x0=Infinity, y0=Infinity, x1=-Infinity, y1=-Infinity;
+  const meter = (x,y)=>{ if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y; };
+  if(geoListo()) for(const f of geo.figs) if(f.bb){ meter(f.bb.x0,f.bb.y0); meter(f.bb.x1,f.bb.y1); }
+  if(covBB){
+    meter((covBB.x0-HALF)*CELL, (covBB.y0-HALF)*CELL);
+    meter((covBB.x1+1-HALF)*CELL, (covBB.y1+1-HALF)*CELL);
+  }
+  if(S.A) meter(S.A.x, S.A.y);
+  if(S.B) meter(S.B.x, S.B.y);
+  if(S.pos) meter(S.pos.x, S.pos.y);
+  if(!isFinite(x0)){ toast('Todavía no hay nada para mostrar: cargá un mapa o empezá a trabajar.', 4500); return; }
+  const margen = 25;                                    // metros de aire alrededor
+  const anchoM = Math.max(x1-x0, 20) + margen*2, altoM = Math.max(y1-y0, 20) + margen*2;
+  vistaPrev = { zoom:S.zoom, courseUp:S.courseUp };
+  S.vista = true;
+  S.courseUp = false;                                   // norte arriba: se lee mejor
+  S.zoom = clamp(Math.min(W/anchoM, (H-160)/altoM), 0.15, 40);
+  camX = (x0+x1)/2; camY = (y0+y1)/2; camH = 0; camOn = true;
+  $('verLote').classList.add('on');
+  const cl = contarLineas();
+  const ha = (S.areaCells*CELL*CELL/10000).toFixed(2);
+  toast(cl ? ('Líneas hechas: '+cl.hechas+' de '+cl.total+' · '+ha+' ha aplicadas')
+           : (ha+' ha aplicadas'), 5000);
+}
+$('verLote').addEventListener('click', ()=>{ S.vista ? salirVista() : entrarVista(); });
 $('rotBtn').addEventListener('click', ()=>{
   S.courseUp=!S.courseUp;
   $('rotBtn').textContent = S.courseUp ? '▲' : 'N';

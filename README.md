@@ -16,6 +16,7 @@ montado en el tractor. App web de un solo archivo, instalable (PWA) y 100% offli
 - Mapa del lote desde KML, KMZ o GPX: contorno con superficie y aviso al salir, y líneas
   de referencia para drenajes o curvas de nivel
 - Las líneas se marcan como hechas solas, midiendo cuánto quedó cubierto por el trabajo
+- Botón de vista general: encuadra el lote entero para ver de un vistazo qué falta
 - Exportar el trabajo a KMZ para abrirlo en Google Earth: lo aplicado como imagen sobre el
   terreno, las líneas con su estado, la línea A-B y el resumen de hectáreas y solape
 - Modo demo con volante para probar sin GPS
