@@ -15,6 +15,9 @@ montado en el tractor. App web de un solo archivo, instalable (PWA) y 100% offli
 - Tractor dibujado a escala con el botalón, las boquillas y la baliza de aplicación
 - Mapa del lote desde KML, KMZ o GPX: contorno con superficie y aviso al salir, y líneas
   de referencia para drenajes o curvas de nivel
+- Las líneas se marcan como hechas solas, midiendo cuánto quedó cubierto por el trabajo
+- Exportar el trabajo a KMZ para abrirlo en Google Earth: lo aplicado como imagen sobre el
+  terreno, las líneas con su estado, la línea A-B y el resumen de hectáreas y solape
 - Modo demo con volante para probar sin GPS
 - Funciona sin señal: el GPS no usa datos y el service worker deja la app instalada
 

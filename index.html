@@ -142,6 +142,18 @@ if ("serviceWorker" in navigator) {
   .big.resume{background:var(--amber); color:#1A1206}
   .big.danger{background:transparent; color:var(--red); border:1px solid var(--red)}
   .big:active{filter:brightness(1.2)}
+  .lineaFila{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:9px 0; border-bottom:1px solid var(--line); font-size:14px;
+  }
+  .lineaFila:last-child{border-bottom:none}
+  .lineaFila span.u{color:var(--muted); font-size:12px}
+  .lineaFila button{
+    flex:none; min-height:38px; padding:0 12px; border-radius:9px;
+    border:1px solid var(--line); background:var(--panel2); color:var(--text);
+    font-size:13px; font-weight:700;
+  }
+  .lineaFila button:active{filter:brightness(1.3)}
   .geoInfo{font-size:12.5px; color:var(--muted); margin-top:8px; word-break:break-all}
   .geoInfo b{color:var(--text); font-weight:600}
   .note{font-size:12.5px; color:var(--muted); line-height:1.5; margin-top:14px}
@@ -166,6 +178,7 @@ if ("serviceWorker" in navigator) {
   <div><b id="stHa">0.00</b> <span class="u">ha</span> · <b id="stOv">0.0</b><span class="u">% solape</span></div>
   <div class="u" id="stSaved">💾 sin guardar aún</div>
   <div id="stMark" style="display:none">📍 <b id="stMarkD">–</b> <span class="u">al punto</span></div>
+  <div id="stLineas" style="display:none"><b id="stLineasN">–</b> <span class="u">líneas hechas</span></div>
 </div>
 
 <div id="side">
@@ -223,7 +236,10 @@ if ("serviceWorker" in navigator) {
       lote, los drenajes o las curvas de nivel. Los contornos se dibujan en blanco y te avisa
       si te salís; las líneas, en celeste. Si instalaste la app, también podés mandarte el
       archivo por mail o WhatsApp y usar <b>Compartir → Banderillero</b>: se abre con el lote
-      ya cargado.
+      ya cargado. Las líneas se pintan de verde solas a medida que las vas haciendo, y en
+      Ajustes ves cuáles faltan.
+      <br><br><b>Al terminar:</b> desde Ajustes, <b>Exportar trabajo</b> te arma un archivo
+      para abrir en Google Earth en la computadora, con lo aplicado, las hectáreas y el solape.
       <br><br><b>Precisión:</b> el GPS del celular tiene un error típico de 2–5 m. Sirve para
       pulverización con botalones anchos; para más precisión se puede vincular un receptor
       GPS externo por Bluetooth.
@@ -248,6 +264,13 @@ if ("serviceWorker" in navigator) {
       <button class="big alt geoCargar" style="margin-top:0">📄 Cargar KML, KMZ o GPX</button>
       <div class="geoInfo">Cargado: <b class="geoLbl">ninguno</b></div>
     </div>
+    <div class="field" id="lineasBox" style="display:none">
+      <label>Líneas: qué se hizo y qué falta</label>
+      <div id="lineasList"></div>
+      <div class="geoInfo">Se marcan solas con lo que vas pintando. Si alguna quedó mal,
+        cambiala a mano acá.</div>
+    </div>
+    <button class="big" id="exportBtn">📤 Exportar trabajo (KMZ)</button>
     <button class="big alt" id="closeCfg">Volver al mapa</button>
     <button class="big danger geoQuitar" style="display:none">Quitar mapa del lote</button>
     <button class="big danger" id="resetMark">Borrar punto 📍</button>
@@ -578,6 +601,76 @@ function syncGeoUI(){
   for(const el of document.querySelectorAll('.geoLbl')) el.textContent = txt;
   for(const el of document.querySelectorAll('.geoQuitar')) el.style.display = geo ? 'block' : 'none';
 }
+
+/* Cuánto de cada línea quedó cubierto por el trabajo. Se mide contra las celdas
+   ya pintadas, así se marca sola: el operario no tiene que tocar nada. */
+const HECHA = 0.7, EMPEZADA = 0.15;
+function actualizarProgreso(){
+  if(!geo || !cov || !geoListo()) return;
+  for(const f of geo.figs){
+    if(f.tipo!=='linea' || !f.pts) continue;
+    if(f.manual != null){ f.hecho = f.manual ? 1 : 0; continue; }
+    let sobre=0, total=0;
+    for(let i=1;i<f.pts.length;i++){
+      const a=f.pts[i-1], b=f.pts[i];
+      const n = Math.max(1, Math.round(Math.hypot(b.x-a.x, b.y-a.y)/2));   // un punto cada 2 m
+      for(let k=0;k<n;k++){
+        const t=k/n, x=a.x+(b.x-a.x)*t, y=a.y+(b.y-a.y)*t;
+        const cx=Math.floor(x/CELL)+HALF, cy=Math.floor(y/CELL)+HALF;
+        total++;
+        if(cx>=0 && cx<GRID && cy>=0 && cy<GRID && cov[cy*GRID+cx]) sobre++;
+      }
+    }
+    f.hecho = total ? sobre/total : 0;
+  }
+}
+function colorLinea(f){
+  const p = f.hecho || 0;
+  return p>=HECHA ? '#5BD46C' : (p>=EMPEZADA ? '#F2A93B' : '#4FC3F7');
+}
+function contarLineas(){
+  if(!geo) return null;
+  const ls = geo.figs.filter(f=>f.tipo==='linea');
+  if(!ls.length) return null;
+  return { hechas: ls.filter(f=>(f.hecho||0)>=HECHA).length, total: ls.length };
+}
+setInterval(()=>{ if(S.started && geo){ actualizarProgreso(); updateHUD(); } }, 3000);
+
+function guardarEstadoLineas(){
+  if(!geo) return;
+  try{
+    const g = JSON.parse(localStorage.getItem('bg_geo')||'null');
+    if(!g || !g.figs) return;
+    g.figs.forEach((f,i)=>{ if(geo.figs[i]) f.manual = geo.figs[i].manual; });
+    localStorage.setItem('bg_geo', JSON.stringify(g));
+  }catch(e){}
+}
+function listaLineas(){
+  const cont = $('lineasList');
+  const ls = geo ? geo.figs.filter(f=>f.tipo==='linea') : [];
+  $('lineasBox').style.display = ls.length ? 'block' : 'none';
+  cont.innerHTML = '';
+  if(!ls.length) return;
+  actualizarProgreso();
+  ls.forEach((f, i)=>{
+    const hecha = (f.hecho||0) >= HECHA;
+    const fila = document.createElement('div');
+    fila.className = 'lineaFila';
+    const izq = document.createElement('span');
+    izq.innerHTML = '<b style="color:'+colorLinea(f)+'">●</b> ' +
+      (f.nombre || ('Línea '+(i+1))) +
+      ' <span class="u">' + Math.round((f.hecho||0)*100) + '%</span>';
+    const b = document.createElement('button');
+    b.textContent = hecha ? 'Pendiente' : 'Hecha';
+    b.addEventListener('click', ()=>{
+      f.manual = !hecha;
+      f.hecho = f.manual ? 1 : 0;
+      guardarEstadoLineas(); listaLineas(); updateHUD();
+    });
+    fila.appendChild(izq); fila.appendChild(b);
+    cont.appendChild(fila);
+  });
+}
 function areaPoly(pts){
   let a=0;
   for(let i=0,j=pts.length-1;i<pts.length;j=i++) a += (pts[j].x+pts[i].x)*(pts[j].y-pts[i].y);
@@ -684,7 +777,7 @@ async function cargarMapa(file){
     if(na && nl) msg += ' y ';
     if(nl) msg += nl+(nl>1?' líneas':' línea');
     toast(msg, 5000);
-    syncGeoUI();
+    syncGeoUI(); listaLineas();
   }catch(e){
     toast('No pude leer el archivo: '+e.message, 6000);
   }
@@ -693,7 +786,7 @@ async function cargarMapa(file){
 function quitarMapa(){
   geo = null;
   localStorage.removeItem('bg_geo');
-  syncGeoUI();
+  syncGeoUI(); listaLineas();
   toast('Mapa del lote quitado.');
 }
 
@@ -716,6 +809,173 @@ if(/[?&]compartido=1/.test(location.search)){
       await cargarMapa(new File([blob], nombre));
     }))
     .catch(()=>{});
+}
+
+/* ============ exportar el trabajo (KMZ para Google Earth) ============
+   Sale un KMZ con lo aplicado como imagen pegada al terreno, más las líneas,
+   el contorno, la línea A–B y los números del trabajo. */
+function crc32(u8){
+  let t = crc32.t;
+  if(!t){
+    t = crc32.t = new Uint32Array(256);
+    for(let n=0;n<256;n++){
+      let c=n;
+      for(let k=0;k<8;k++) c = (c & 1) ? (0xEDB88320 ^ (c>>>1)) : (c>>>1);
+      t[n]=c>>>0;
+    }
+  }
+  let crc = 0xFFFFFFFF;
+  for(let i=0;i<u8.length;i++) crc = t[(crc ^ u8[i]) & 0xFF] ^ (crc>>>8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+// ZIP sin comprimir: alcanza y evita sumar una librería (el PNG ya viene comprimido)
+function zipStored(archivos){
+  const enc = new TextEncoder(), partes = [], central = [];
+  let off = 0, n = 0;
+  for(const a of archivos){
+    const nom = enc.encode(a.nombre), d = a.datos, crc = crc32(d);
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, d.length, true);
+    lh.setUint32(22, d.length, true); lh.setUint16(26, nom.length, true);
+    partes.push(new Uint8Array(lh.buffer), nom, d);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true);
+    ch.setUint32(16, crc, true); ch.setUint32(20, d.length, true);
+    ch.setUint32(24, d.length, true); ch.setUint16(28, nom.length, true);
+    ch.setUint32(42, off, true);
+    central.push(new Uint8Array(ch.buffer), nom);
+    off += 30 + nom.length + d.length; n++;
+  }
+  let cdTam = 0;
+  for(const c of central) cdTam += c.length;
+  const eo = new DataView(new ArrayBuffer(22));
+  eo.setUint32(0, 0x06054b50, true);
+  eo.setUint16(8, n, true); eo.setUint16(10, n, true);
+  eo.setUint32(12, cdTam, true); eo.setUint32(16, off, true);
+  return new Blob([...partes, ...central, new Uint8Array(eo.buffer)],
+                  {type:'application/vnd.google-earth.kmz'});
+}
+
+const xmlEsc = t => String(t).replace(/[<>&'"]/g, c =>
+  ({'<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;'}[c]));
+const kmlColor = hex => 'ff' + hex.slice(5,7) + hex.slice(3,5) + hex.slice(1,3);  // aabbggrr
+const xy2ll = p => [origin.lat + p.y/origin.ky, origin.lon + p.x/origin.kx];
+const coordKml = p => { const [la,lo]=xy2ll(p); return lo.toFixed(7)+','+la.toFixed(7)+',0'; };
+
+// recorta lo pintado a lo realmente usado y lo devuelve con el norte arriba
+function imagenCobertura(){
+  let x0=GRID, y0=GRID, x1=-1, y1=-1;
+  for(let cy=0; cy<GRID; cy++) for(let cx=0; cx<GRID; cx++){
+    if(!cov[cy*GRID+cx]) continue;
+    if(cx<x0)x0=cx; if(cx>x1)x1=cx;
+    if(cy<y0)y0=cy; if(cy>y1)y1=cy;
+  }
+  if(x1<0) return null;
+  const w=x1-x0+1, h=y1-y0+1;
+  const c=document.createElement('canvas'); c.width=w; c.height=h;
+  const g=c.getContext('2d');
+  g.imageSmoothingEnabled=false;
+  g.translate(0,h); g.scale(1,-1);       // en la grilla el norte crece hacia arriba
+  g.drawImage(pcan, x0, y0, w, h, 0, 0, w, h);
+  return {
+    canvas: c,
+    oeste: origin.lon + ((x0-HALF)*CELL)/origin.kx,
+    este:  origin.lon + ((x1+1-HALF)*CELL)/origin.kx,
+    sur:   origin.lat + ((y0-HALF)*CELL)/origin.ky,
+    norte: origin.lat + ((y1+1-HALF)*CELL)/origin.ky
+  };
+}
+
+async function exportarTrabajo(){
+  if(!S.started || !cov || !origin){ toast('Todavía no hay trabajo para exportar.'); return; }
+  try{
+    const ha = S.areaCells*CELL*CELL/10000;
+    if(ha <= 0){ toast('No hay nada pintado todavía.'); return; }
+    toast('Preparando el archivo…', 2500);
+    await new Promise(r=>setTimeout(r,50));
+    const solape = S.areaCells ? (S.overlapCells/S.areaCells*100) : 0;
+    const ahora = new Date();
+    const sello = ahora.toLocaleString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric',
+                                                hour:'2-digit',minute:'2-digit'});
+    const img = imagenCobertura();
+    const archivos = [];
+    let cuerpo = '';
+
+    if(img){
+      const blob = await new Promise(r=>img.canvas.toBlob(r,'image/png'));
+      archivos.push({nombre:'cobertura.png', datos:new Uint8Array(await blob.arrayBuffer())});
+      cuerpo += `<GroundOverlay><name>Aplicado</name><color>b4ffffff</color>
+<Icon><href>cobertura.png</href></Icon>
+<LatLonBox><north>${img.norte.toFixed(8)}</north><south>${img.sur.toFixed(8)}</south><east>${img.este.toFixed(8)}</east><west>${img.oeste.toFixed(8)}</west></LatLonBox>
+</GroundOverlay>\n`;
+    }
+
+    if(geo && geoListo()){
+      actualizarProgreso();
+      cuerpo += '<Folder><name>'+xmlEsc(geo.nombre)+'</name>\n';
+      geo.figs.forEach((f,i)=>{
+        if(!f.pts || f.pts.length<2) return;
+        const coords = f.pts.map(coordKml).join(' ');
+        const nom = xmlEsc(f.nombre || ((f.tipo==='area'?'Contorno ':'Línea ')+(i+1)));
+        if(f.tipo==='area'){
+          cuerpo += `<Placemark><name>${nom}</name>
+<Style><LineStyle><color>ffe9efe9</color><width>2</width></LineStyle><PolyStyle><fill>0</fill></PolyStyle></Style>
+<Polygon><outerBoundaryIs><LinearRing><coordinates>${coords}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>\n`;
+        }else{
+          const pct = Math.round((f.hecho||0)*100);
+          const estado = (f.hecho||0)>=HECHA ? 'Hecha' : ((f.hecho||0)>=EMPEZADA ? 'Empezada' : 'Pendiente');
+          cuerpo += `<Placemark><name>${nom} (${pct}%)</name><description>${estado}</description>
+<Style><LineStyle><color>${kmlColor(colorLinea(f))}</color><width>3</width></LineStyle></Style>
+<LineString><tessellate>1</tessellate><coordinates>${coords}</coordinates></LineString></Placemark>\n`;
+        }
+      });
+      cuerpo += '</Folder>\n';
+    }
+
+    if(S.A && S.B){
+      cuerpo += `<Placemark><name>Línea A–B</name>
+<Style><LineStyle><color>ff3ba9f2</color><width>2</width></LineStyle></Style>
+<LineString><coordinates>${coordKml(S.A)} ${coordKml(S.B)}</coordinates></LineString></Placemark>\n`;
+    }
+    if(S.mark){
+      cuerpo += `<Placemark><name>Punto guardado</name><Point><coordinates>${coordKml(S.mark)}</coordinates></Point></Placemark>\n`;
+    }
+
+    const cl = contarLineas();
+    const resumen = 'Fecha: '+sello+
+      '\nSuperficie aplicada: '+ha.toFixed(2)+' ha'+
+      '\nSolape: '+solape.toFixed(1)+' %'+
+      '\nAncho de labor: '+S.width+' m'+
+      (cl ? '\nLíneas hechas: '+cl.hechas+' de '+cl.total : '')+
+      (S.demo ? '\n\n(Generado en modo demo)' : '');
+
+    const kml = '<?xml version="1.0" encoding="UTF-8"?>\n'+
+      '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>\n'+
+      '<name>Banderillero — '+xmlEsc(sello)+'</name>\n'+
+      '<description><![CDATA['+resumen.replace(/\n/g,'<br>')+']]></description>\n'+
+      cuerpo+'</Document></kml>';
+
+    archivos.unshift({nombre:'doc.kml', datos:new TextEncoder().encode(kml)});
+    const zip = zipStored(archivos);
+    const nombre = 'Banderillero '+ahora.toISOString().slice(0,10)+' '+
+      String(ahora.getHours()).padStart(2,'0')+String(ahora.getMinutes()).padStart(2,'0')+
+      ' ('+ha.toFixed(1)+' ha).kmz';
+    const file = new File([zip], nombre, {type:'application/vnd.google-earth.kmz'});
+
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:'Trabajo del Banderillero'});
+    }else{
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(zip); a.download=nombre;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(a.href), 8000);
+      toast('Archivo descargado: '+nombre, 5000);
+    }
+  }catch(e){
+    if(e && e.name === 'AbortError') return;    // cerró el menú de compartir
+    toast('No pude exportar: '+e.message, 6000);
+  }
 }
 
 /* ================= HUD ================= */
@@ -741,6 +1001,13 @@ function updateHUD(){
     $('stMarkD').textContent = dm>=1000 ? (dm/1000).toFixed(2)+' km' : dm.toFixed(0)+' m';
     $('stMark').style.display='block';
   } else $('stMark').style.display='none';
+
+  const cl = contarLineas();
+  if(cl){
+    $('stLineasN').textContent = cl.hechas+' de '+cl.total;
+    $('stLineasN').style.color = cl.hechas===cl.total ? 'var(--green-bright)' : 'var(--text)';
+    $('stLineas').style.display='block';
+  } else $('stLineas').style.display='none';
 
   const g = guidance();
   for(let i=0;i<NLED;i++) ledEls[i].className = 'led'+(i===CLED?' center':'');
@@ -1122,7 +1389,8 @@ function draw(){
         ctx.fillStyle = 'rgba(233,239,233,0.045)'; ctx.fill();
         ctx.strokeStyle = 'rgba(233,239,233,0.8)'; ctx.lineWidth = 2.2/S.zoom;
       }else{
-        ctx.strokeStyle = '#4FC3F7'; ctx.lineWidth = 2.6/S.zoom;
+        // celeste = pendiente, ámbar = empezada, verde = hecha
+        ctx.strokeStyle = colorLinea(f); ctx.lineWidth = 2.6/S.zoom;
       }
       ctx.stroke();
     }
@@ -1404,8 +1672,9 @@ paintBtn.addEventListener('click', ()=>{
   paintBtn.querySelector('small').textContent = S.painting ? 'pintando' : 'apagado';
 });
 
-$('cfgBtn').addEventListener('click', ()=>{ syncWidthInputs(); $('settings').style.display='flex'; });
+$('cfgBtn').addEventListener('click', ()=>{ syncWidthInputs(); listaLineas(); $('settings').style.display='flex'; });
 $('closeCfg').addEventListener('click', ()=>{ $('settings').style.display='none'; });
+$('exportBtn').addEventListener('click', exportarTrabajo);
 $('resetMark').addEventListener('click', ()=>{
   S.mark=null; updateHUD(); saveWork().catch(()=>{});
   $('settings').style.display='none'; toast('Punto 📍 borrado.');
