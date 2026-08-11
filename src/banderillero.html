@@ -123,6 +123,8 @@
   .big.resume{background:var(--amber); color:#1A1206}
   .big.danger{background:transparent; color:var(--red); border:1px solid var(--red)}
   .big:active{filter:brightness(1.2)}
+  .geoInfo{font-size:12.5px; color:var(--muted); margin-top:8px; word-break:break-all}
+  .geoInfo b{color:var(--text); font-weight:600}
   .note{font-size:12.5px; color:var(--muted); line-height:1.5; margin-top:14px}
   .note b{color:var(--text)}
   #settings{display:none}
@@ -167,6 +169,8 @@
   <button class="btn" id="cfgBtn" style="flex:.55"><span>⚙</span><small>ajustes</small></button>
 </div>
 
+<input type="file" id="geoFile" accept=".kml,.kmz,.gpx,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz,application/gpx+xml,text/xml" style="display:none">
+
 <div class="sheet" id="setup">
   <div class="card">
     <div class="brand">
@@ -184,6 +188,11 @@
         <button id="wPlus">＋</button>
       </div>
     </div>
+    <div class="field">
+      <label>Mapa del lote <span style="opacity:.7">(opcional)</span></label>
+      <button class="big alt geoCargar" style="margin-top:0">📄 Cargar KML, KMZ o GPX</button>
+      <div class="geoInfo">Cargado: <b class="geoLbl">ninguno</b></div>
+    </div>
     <button class="big resume" id="resumeBtn" style="display:none"></button>
     <button class="big" id="startGps">Iniciar con GPS</button>
     <button class="big alt" id="startDemo">Probar en modo demo</button>
@@ -191,6 +200,9 @@
       <b>Cómo se usa:</b> arrancá en la cabecera, marcá <b>A</b>, avanzá derecho hasta el
       final de la pasada y marcá <b>B</b>. La barra de luces te indica hacia dónde corregir.
       Activá <b>PINTAR</b> con el botalón abierto: lo cubierto queda verde y el solape en rojo.
+      <br><br><b>Mapa del lote:</b> podés cargar un <b>KML, KMZ o GPX</b> con el contorno del
+      lote, los drenajes o las curvas de nivel. Los contornos se dibujan en blanco y te avisa
+      si te salís; las líneas, en celeste.
       <br><br><b>Precisión:</b> el GPS del celular tiene un error típico de 2–5 m. Sirve para
       pulverización con botalones anchos; para más precisión se puede vincular un receptor
       GPS externo por Bluetooth.
@@ -210,7 +222,13 @@
         <button id="wPlus2">＋</button>
       </div>
     </div>
+    <div class="field">
+      <label>Mapa del lote</label>
+      <button class="big alt geoCargar" style="margin-top:0">📄 Cargar KML, KMZ o GPX</button>
+      <div class="geoInfo">Cargado: <b class="geoLbl">ninguno</b></div>
+    </div>
     <button class="big alt" id="closeCfg">Volver al mapa</button>
+    <button class="big danger geoQuitar" style="display:none">Quitar mapa del lote</button>
     <button class="big danger" id="resetMark">Borrar punto 📍</button>
     <button class="big danger" id="resetAB">Borrar línea A–B</button>
     <button class="big danger" id="resetPaint">Borrar todo lo pintado</button>
@@ -454,6 +472,21 @@ function onFix(x, y, meta){
     onFix._warned = true;
     toast('Estás cerca del límite del área de trabajo (1,9 km del inicio)', 6000);
   }
+  // aviso al cruzar el contorno del lote cargado
+  if(geoListo()){
+    let hayArea = false, dentro = false;
+    for(const f of geo.figs) if(f.tipo==='area' && f.pts){
+      hayArea = true;
+      if(enPoly(S.pos, f.pts)){ dentro = true; break; }
+    }
+    if(hayArea){
+      if(onFix._dentro == null) onFix._dentro = dentro;
+      else if(dentro !== onFix._dentro && now-(onFix._avisoT||0) > 8000){
+        onFix._dentro = dentro; onFix._avisoT = now;
+        toast(dentro ? 'Entraste al lote.' : 'Saliste del contorno del lote.', 3500);
+      }
+    }
+  }
   if(S.painting){
     const ip = implPos(); // se pinta desde la barra del implemento
     if(!lastPaint) lastPaint = {x:ip.x, y:ip.y, h:S.heading};
@@ -490,6 +523,162 @@ function guidance(){
   const right = (corrX*rvx + corrY*rvy) > 0;
   return { err, dist:Math.abs(err), pass, steerRight:right };
 }
+
+/* ============ mapa del lote (KML / KMZ / GPX) ============
+   Las figuras se guardan en lat/lon, que es lo que no cambia nunca, y se
+   proyectan a metros cada vez que hace falta. Así siguen calzando aunque el
+   origen de coordenadas se fije después, al tomar el primer punto del GPS. */
+let geo = null;   // {nombre, figs:[{tipo:'linea'|'area', nombre, ll:[[lat,lon]], pts:[{x,y}]}], ha}
+
+function geoProyectar(){
+  if(!geo || !origin) return;
+  geo.ha = 0;
+  for(const f of geo.figs){
+    f.pts = f.ll.map(([la,lo])=>llToXY(la,lo));
+    let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+    for(const p of f.pts){
+      if(p.x<x0)x0=p.x; if(p.x>x1)x1=p.x;
+      if(p.y<y0)y0=p.y; if(p.y>y1)y1=p.y;
+    }
+    f.bb = {x0,y0,x1,y1};
+    if(f.tipo==='area') geo.ha += areaPoly(f.pts)/10000;
+  }
+  geo.orig = origin;
+}
+// el origen recién existe cuando llega el primer punto del GPS: si cambió,
+// las figuras se vuelven a proyectar solas
+function geoListo(){
+  if(!geo || !origin) return false;
+  if(geo.orig !== origin) geoProyectar();
+  return true;
+}
+function syncGeoUI(){
+  const txt = geo ? (geo.nombre + (geo.ha ? ' · '+geo.ha.toFixed(1)+' ha' : '')) : 'ninguno';
+  for(const el of document.querySelectorAll('.geoLbl')) el.textContent = txt;
+  for(const el of document.querySelectorAll('.geoQuitar')) el.style.display = geo ? 'block' : 'none';
+}
+function areaPoly(pts){
+  let a=0;
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++) a += (pts[j].x+pts[i].x)*(pts[j].y-pts[i].y);
+  return Math.abs(a/2);
+}
+function enPoly(p, pts){
+  let dentro=false;
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++){
+    const a=pts[i], b=pts[j];
+    if(((a.y>p.y)!==(b.y>p.y)) && (p.x < (b.x-a.x)*(p.y-a.y)/(b.y-a.y)+a.x)) dentro=!dentro;
+  }
+  return dentro;
+}
+
+function parseGeo(texto){
+  const doc = new DOMParser().parseFromString(texto, 'application/xml');
+  if(doc.getElementsByTagName('parsererror').length) throw new Error('archivo ilegible');
+  const figs = [];
+  const nombreDe = el => {
+    const n = el.getElementsByTagName('name')[0];
+    return n ? n.textContent.trim() : '';
+  };
+  // KML: las coordenadas vienen "lon,lat[,alt]" separadas por espacios
+  const coordsKml = el => el.textContent.trim().split(/\s+/).map(t=>{
+    const p = t.split(',');
+    return [parseFloat(p[1]), parseFloat(p[0])];
+  }).filter(p=>isFinite(p[0]) && isFinite(p[1]));
+
+  for(const pm of doc.getElementsByTagName('Placemark')){
+    const nom = nombreDe(pm);
+    for(const ls of pm.getElementsByTagName('LineString')){
+      const c = ls.getElementsByTagName('coordinates')[0];
+      if(c){ const ll = coordsKml(c); if(ll.length>1) figs.push({tipo:'linea', nombre:nom, ll}); }
+    }
+    for(const pg of pm.getElementsByTagName('Polygon')){
+      const c = pg.getElementsByTagName('coordinates')[0];
+      if(c){ const ll = coordsKml(c); if(ll.length>2) figs.push({tipo:'area', nombre:nom, ll}); }
+    }
+  }
+  // GPX: recorridos y rutas
+  const deGpx = (padres, hijos) => {
+    for(const p of doc.getElementsByTagName(padres)){
+      const nom = nombreDe(p);
+      const ll = [];
+      for(const pt of p.getElementsByTagName(hijos)){
+        const la = parseFloat(pt.getAttribute('lat')), lo = parseFloat(pt.getAttribute('lon'));
+        if(isFinite(la) && isFinite(lo)) ll.push([la,lo]);
+      }
+      if(ll.length>1) figs.push({tipo:'linea', nombre:nom, ll});
+    }
+  };
+  deGpx('trk','trkpt'); deGpx('rte','rtept');
+  return figs;
+}
+
+// KMZ: es un ZIP; se busca el .kml de adentro y se descomprime
+async function abrirKmz(buf){
+  const dv = new DataView(buf), td = new TextDecoder();
+  for(let i=buf.byteLength-22; i>=0; i--){          // fin del directorio central
+    if(dv.getUint32(i, true) !== 0x06054b50) continue;
+    let off = dv.getUint32(i+16, true);
+    const n = dv.getUint16(i+10, true);
+    for(let k=0; k<n; k++){
+      const nLen = dv.getUint16(off+28, true), eLen = dv.getUint16(off+30, true),
+            cLen = dv.getUint16(off+32, true), metodo = dv.getUint16(off+10, true),
+            tam = dv.getUint32(off+20, true), lho = dv.getUint32(off+42, true);
+      const nombre = td.decode(new Uint8Array(buf, off+46, nLen));
+      if(/\.kml$/i.test(nombre)){
+        const lnLen = dv.getUint16(lho+26, true), leLen = dv.getUint16(lho+28, true);
+        const datos = new Uint8Array(buf, lho+30+lnLen+leLen, tam);
+        if(metodo === 0) return td.decode(datos);
+        const ds = new DecompressionStream('deflate-raw');
+        const salida = new Response(new Blob([datos]).stream().pipeThrough(ds));
+        return await salida.text();
+      }
+      off += 46 + nLen + eLen + cLen;
+    }
+  }
+  throw new Error('el KMZ no tiene ningún KML adentro');
+}
+
+async function cargarMapa(file){
+  try{
+    let figs;
+    if(/\.kmz$/i.test(file.name)) figs = parseGeo(await abrirKmz(await file.arrayBuffer()));
+    else figs = parseGeo(await file.text());
+    if(!figs.length){ toast('No encontré líneas ni contornos en ese archivo.', 5000); return; }
+    // sin GPS todavía: el origen se fija en el medio del lote
+    if(!origin){
+      let la=0, lo=0, n=0;
+      for(const f of figs) for(const p of f.ll){ la+=p[0]; lo+=p[1]; n++; }
+      llToXY(la/n, lo/n);
+    }
+    geo = { nombre:file.name, figs, ha:0 };
+    geoProyectar();
+    onFix._dentro = null;                // el aviso de contorno arranca de cero
+    localStorage.setItem('bg_geo', JSON.stringify({nombre:geo.nombre,
+      figs: figs.map(f=>({tipo:f.tipo, nombre:f.nombre, ll:f.ll}))}));
+    const nl = figs.filter(f=>f.tipo==='linea').length, na = figs.length-nl;
+    let msg = 'Mapa cargado: ';
+    if(na) msg += na+(na>1?' contornos':' contorno')+' ('+geo.ha.toFixed(1)+' ha)';
+    if(na && nl) msg += ' y ';
+    if(nl) msg += nl+(nl>1?' líneas':' línea');
+    toast(msg, 5000);
+    syncGeoUI();
+  }catch(e){
+    toast('No pude leer el archivo: '+e.message, 6000);
+  }
+}
+
+function quitarMapa(){
+  geo = null;
+  localStorage.removeItem('bg_geo');
+  syncGeoUI();
+  toast('Mapa del lote quitado.');
+}
+
+// vuelve a cargarse solo al abrir la app
+try{
+  const g = JSON.parse(localStorage.getItem('bg_geo')||'null');
+  if(g && g.figs && g.figs.length){ geo = {nombre:g.nombre, figs:g.figs, ha:0}; }
+}catch(e){}
 
 /* ================= HUD ================= */
 const NLED = 15, CLED = 7;
@@ -880,6 +1069,27 @@ function draw(){
     }
   }
 
+  // mapa del lote: contornos en blanco, drenajes y curvas en celeste
+  if(geoListo()){
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    for(const f of geo.figs){
+      if(!f.pts || f.pts.length<2) continue;
+      const b = f.bb;                       // fuera de pantalla: ni se dibuja
+      if(b.x1 < camX-R || b.x0 > camX+R || b.y1 < camY-R || b.y0 > camY+R) continue;
+      ctx.beginPath();
+      ctx.moveTo(f.pts[0].x, f.pts[0].y);
+      for(let i=1;i<f.pts.length;i++) ctx.lineTo(f.pts[i].x, f.pts[i].y);
+      if(f.tipo==='area'){
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(233,239,233,0.045)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(233,239,233,0.8)'; ctx.lineWidth = 2.2/S.zoom;
+      }else{
+        ctx.strokeStyle = '#4FC3F7'; ctx.lineWidth = 2.6/S.zoom;
+      }
+      ctx.stroke();
+    }
+  }
+
   // líneas de guiado: solo el tramo visible de cada una
   if(S.ab){
     const {a,u,n}=S.ab;
@@ -1107,6 +1317,18 @@ function freshStart(demo){
 }
 $('startGps').addEventListener('click', ()=>freshStart(false));
 $('startDemo').addEventListener('click', ()=>freshStart(true));
+
+/* ---- mapa del lote ---- */
+$('geoFile').addEventListener('change', e=>{
+  const f = e.target.files[0];
+  e.target.value = '';                 // así se puede volver a elegir el mismo archivo
+  if(f) cargarMapa(f);
+});
+for(const b of document.querySelectorAll('.geoCargar'))
+  b.addEventListener('click', ()=>$('geoFile').click());
+for(const b of document.querySelectorAll('.geoQuitar'))
+  b.addEventListener('click', quitarMapa);
+syncGeoUI();
 
 // si hay un trabajo guardado, ofrecer retomarlo
 kvGet('trabajo').then(w=>{

@@ -13,6 +13,8 @@ montado en el tractor. App web de un solo archivo, instalable (PWA) y 100% offli
 - Pintado de cobertura desde la barra del implemento; el solape se marca en rojo
 - Hectáreas trabajadas, % de solape, velocidad y precisión GPS
 - Tractor dibujado a escala con el botalón, las boquillas y la baliza de aplicación
+- Mapa del lote desde KML, KMZ o GPX: contorno con superficie y aviso al salir, y líneas
+  de referencia para drenajes o curvas de nivel
 - Modo demo con volante para probar sin GPS
 - Funciona sin señal: el GPS no usa datos y el service worker deja la app instalada
 
