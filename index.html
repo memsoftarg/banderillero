@@ -221,7 +221,9 @@ if ("serviceWorker" in navigator) {
       Activá <b>PINTAR</b> con el botalón abierto: lo cubierto queda verde y el solape en rojo.
       <br><br><b>Mapa del lote:</b> podés cargar un <b>KML, KMZ o GPX</b> con el contorno del
       lote, los drenajes o las curvas de nivel. Los contornos se dibujan en blanco y te avisa
-      si te salís; las líneas, en celeste.
+      si te salís; las líneas, en celeste. Si instalaste la app, también podés mandarte el
+      archivo por mail o WhatsApp y usar <b>Compartir → Banderillero</b>: se abre con el lote
+      ya cargado.
       <br><br><b>Precisión:</b> el GPS del celular tiene un error típico de 2–5 m. Sirve para
       pulverización con botalones anchos; para más precisión se puede vincular un receptor
       GPS externo por Bluetooth.
@@ -659,9 +661,11 @@ async function abrirKmz(buf){
 
 async function cargarMapa(file){
   try{
-    let figs;
-    if(/\.kmz$/i.test(file.name)) figs = parseGeo(await abrirKmz(await file.arrayBuffer()));
-    else figs = parseGeo(await file.text());
+    // se mira el contenido, no la extensión: un KMZ es un ZIP y arranca con "PK"
+    const buf = await file.arrayBuffer();
+    const u8 = new Uint8Array(buf);
+    const esZip = u8[0]===0x50 && u8[1]===0x4B;
+    const figs = parseGeo(esZip ? await abrirKmz(buf) : new TextDecoder().decode(buf));
     if(!figs.length){ toast('No encontré líneas ni contornos en ese archivo.', 5000); return; }
     // sin GPS todavía: el origen se fija en el medio del lote
     if(!origin){
@@ -698,6 +702,21 @@ try{
   const g = JSON.parse(localStorage.getItem('bg_geo')||'null');
   if(g && g.figs && g.figs.length){ geo = {nombre:g.nombre, figs:g.figs, ha:0}; }
 }catch(e){}
+
+/* Si la app se abrió desde "Compartir" de otra app (el mail, WhatsApp), el
+   service worker dejó el archivo en una caché: se levanta de ahí. */
+if(/[?&]compartido=1/.test(location.search)){
+  history.replaceState(null, '', location.pathname);
+  caches.open('banderillero-compartido')
+    .then(c => c.match('/__compartido').then(async res => {
+      if(!res) return;
+      const nombre = decodeURIComponent(res.headers.get('x-nombre') || 'mapa.kml');
+      const blob = await res.blob();
+      await c.delete('/__compartido');
+      await cargarMapa(new File([blob], nombre));
+    }))
+    .catch(()=>{});
+}
 
 /* ================= HUD ================= */
 const NLED = 15, CLED = 7;
