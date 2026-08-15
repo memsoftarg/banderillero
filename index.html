@@ -44,6 +44,13 @@ if ("serviceWorker" in navigator) {
     padding:max(6px, env(safe-area-inset-top)) 10px 8px;
     display:flex; flex-direction:column; align-items:center; gap:4px;
   }
+  #gpsBox{
+    position:absolute; right:10px; top:calc(4px + env(safe-area-inset-top));
+    font-size:13px; font-variant-numeric:tabular-nums; color:var(--muted);
+    display:flex; align-items:center; gap:4px;
+  }
+  #gpsBox b{font-size:15px; font-weight:800; color:var(--text)}
+  #gpsBoxDot{width:8px; height:8px; border-radius:50%; background:var(--muted); display:inline-block}
   #leds{display:flex; gap:5px; align-items:center}
   .led{width:16px; height:16px; border-radius:50%; background:var(--led-off); transition:background .1s, box-shadow .1s}
   .led.center{width:20px; height:20px; border:1px solid var(--line)}
@@ -106,6 +113,19 @@ if ("serviceWorker" in navigator) {
   }
   .steerbtn:active{background:var(--amber); color:#1A1206; border-color:var(--amber)}
 
+  /* ---------- ajuste de la imagen de fondo ---------- */
+  #ajusteBar{
+    position:fixed; left:8px; right:8px; top:calc(96px + env(safe-area-inset-top)); z-index:25;
+    display:flex; gap:6px; justify-content:center;
+    background:rgba(20,28,21,.94); border:1px solid var(--amber); border-radius:12px; padding:7px;
+  }
+  .abtn{
+    flex:1; min-height:50px; border-radius:9px; border:1px solid var(--line);
+    background:var(--panel2); color:var(--text); font-size:20px; font-weight:800;
+  }
+  .abtn:active{filter:brightness(1.4)}
+  .abtn.listo{flex:1.5; background:var(--green); color:#08140A; border-color:var(--green); font-size:16px}
+
   /* ---------- aviso ---------- */
   #toast{
     position:fixed; top:110px; left:50%; transform:translateX(-50%); z-index:40;
@@ -165,6 +185,7 @@ if ("serviceWorker" in navigator) {
 <canvas id="map"></canvas>
 
 <div id="topbar">
+  <div id="gpsBox"><span id="gpsBoxDot"></span>±<b id="gpsBoxVal">–</b> m</div>
   <div id="leds"></div>
   <div id="xteRow">
     <span id="xteArrow"></span>
@@ -195,6 +216,15 @@ if ("serviceWorker" in navigator) {
   <button class="steerbtn" id="stR">⟳</button>
 </div>
 
+<div id="ajusteBar" style="display:none">
+  <button class="abtn" id="ajRotL" title="Girar a la izquierda">⟲</button>
+  <button class="abtn" id="ajMenos" title="Achicar">－</button>
+  <button class="abtn" id="ajMas" title="Agrandar">＋</button>
+  <button class="abtn" id="ajRotR" title="Girar a la derecha">⟳</button>
+  <button class="abtn" id="ajTrans" title="Transparencia">◐</button>
+  <button class="abtn listo" id="ajListo">Listo</button>
+</div>
+
 <div id="toast"></div>
 
 <div id="controls">
@@ -203,7 +233,7 @@ if ("serviceWorker" in navigator) {
   <button class="btn" id="cfgBtn" style="flex:.55"><span>⚙</span><small>ajustes</small></button>
 </div>
 
-<input type="file" id="geoFile" accept=".kml,.kmz,.gpx,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz,application/gpx+xml,text/xml" style="display:none">
+<input type="file" id="geoFile" accept=".kml,.kmz,.gpx,.jpg,.jpeg,.png,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz,application/gpx+xml,text/xml,image/jpeg,image/png" style="display:none">
 
 <div class="sheet" id="setup">
   <div class="card">
@@ -280,6 +310,13 @@ if ("serviceWorker" in navigator) {
       <button class="big alt geoCargar" style="margin-top:0">📄 Cargar KML, KMZ o GPX</button>
       <div class="geoInfo">Cargado: <b class="geoLbl">ninguno</b></div>
     </div>
+    <div class="field">
+      <label>Imagen de fondo del lote</label>
+      <button class="big alt geoCargar" style="margin-top:0">🖼 Cargar imagen o KMZ con imagen</button>
+      <div class="geoInfo">Cargada: <b class="fondoLbl">ninguna</b></div>
+      <button class="big alt fondoAjustar" style="display:none">✥ Mover y calzar la imagen</button>
+      <button class="big danger fondoQuitar" style="display:none">Quitar la imagen de fondo</button>
+    </div>
     <div class="field" id="lineasBox" style="display:none">
       <label>Líneas: qué se hizo y qué falta</label>
       <div id="lineasList"></div>
@@ -328,6 +365,7 @@ const S = {
   zoom: 7,              // px CSS por metro
   courseUp: true,
   vista: false,          // vista general de todo el lote (la cámara deja de seguir al tractor)
+  ajustando: false,      // calzando la imagen de fondo a mano
   guia: null,            // {i, fase} línea elegida para ir a hacerla
   guiaNombre: '',
   areaCells: 0, overlapCells: 0,
@@ -788,29 +826,67 @@ function parseGeo(texto){
 }
 
 // KMZ: es un ZIP; se busca el .kml de adentro y se descomprime
-async function abrirKmz(buf){
+function leerZip(buf){
   const dv = new DataView(buf), td = new TextDecoder();
   for(let i=buf.byteLength-22; i>=0; i--){          // fin del directorio central
     if(dv.getUint32(i, true) !== 0x06054b50) continue;
     let off = dv.getUint32(i+16, true);
     const n = dv.getUint16(i+10, true);
+    const entradas = {};
     for(let k=0; k<n; k++){
       const nLen = dv.getUint16(off+28, true), eLen = dv.getUint16(off+30, true),
             cLen = dv.getUint16(off+32, true), metodo = dv.getUint16(off+10, true),
             tam = dv.getUint32(off+20, true), lho = dv.getUint32(off+42, true);
       const nombre = td.decode(new Uint8Array(buf, off+46, nLen));
-      if(/\.kml$/i.test(nombre)){
-        const lnLen = dv.getUint16(lho+26, true), leLen = dv.getUint16(lho+28, true);
-        const datos = new Uint8Array(buf, lho+30+lnLen+leLen, tam);
-        if(metodo === 0) return td.decode(datos);
-        const ds = new DecompressionStream('deflate-raw');
-        const salida = new Response(new Blob([datos]).stream().pipeThrough(ds));
-        return await salida.text();
-      }
+      const lnLen = dv.getUint16(lho+26, true), leLen = dv.getUint16(lho+28, true);
+      entradas[nombre] = { metodo, datos: new Uint8Array(buf, lho+30+lnLen+leLen, tam) };
       off += 46 + nLen + eLen + cLen;
     }
+    return entradas;
   }
-  throw new Error('el KMZ no tiene ningún KML adentro');
+  throw new Error('no parece un archivo KMZ');
+}
+async function inflar(e){
+  if(!e) return null;
+  if(e.metodo === 0) return e.datos;
+  const ds = new DecompressionStream('deflate-raw');
+  const r = new Response(new Blob([e.datos]).stream().pipeThrough(ds));
+  return new Uint8Array(await r.arrayBuffer());
+}
+async function abrirKmz(buf){
+  const z = leerZip(buf);
+  const nom = Object.keys(z).find(n=>/\.kml$/i.test(n));
+  if(!nom) throw new Error('el KMZ no tiene ningún KML adentro');
+  return new TextDecoder().decode(await inflar(z[nom]));
+}
+
+// GroundOverlay: la imagen ya viene con sus coordenadas, se ubica sola
+async function cargarOverlay(texto, zip){
+  const doc = new DOMParser().parseFromString(texto, 'application/xml');
+  const go = doc.getElementsByTagName('GroundOverlay')[0];
+  if(!go) return false;
+  const caja = go.getElementsByTagName('LatLonBox')[0];
+  const icon = go.getElementsByTagName('Icon')[0];
+  if(!caja || !icon) return false;
+  const num = t => { const e = caja.getElementsByTagName(t)[0]; return e ? parseFloat(e.textContent) : NaN; };
+  const norte=num('north'), sur=num('south'), este=num('east'), oeste=num('west'), rotG=num('rotation');
+  const hrefEl = icon.getElementsByTagName('href')[0];
+  const href = hrefEl ? hrefEl.textContent.trim() : '';
+  if(!href || !isFinite(norte) || !isFinite(sur) || !isFinite(este) || !isFinite(oeste)) return false;
+  if(!zip){ toast('El archivo trae una imagen de fondo pero no está incluida adentro.', 6000); return false; }
+  const base = href.split('/').pop();
+  const clave = Object.keys(zip).find(n => n===href || n.split('/').pop()===base);
+  if(!clave){ toast('No encontré la imagen de fondo dentro del archivo.', 6000); return false; }
+  const datos = await inflar(zip[clave]);
+  const blob = new Blob([datos], {type: /\.png$/i.test(clave) ? 'image/png' : 'image/jpeg'});
+  if(!origin) llToXY((norte+sur)/2, (este+oeste)/2);
+  fondo = { blob, ll:{norte,sur,este,oeste}, rot: isFinite(rotG) ? -rotG*Math.PI/180 : 0,
+            alpha:1, exacto:true, img:null };
+  fondo.img = await imagenDesdeBlob(blob);
+  fondoProyectar();
+  await guardarFondo();
+  syncFondoUI();
+  return true;
 }
 
 async function cargarMapa(file){
@@ -818,9 +894,29 @@ async function cargarMapa(file){
     // se mira el contenido, no la extensión: un KMZ es un ZIP y arranca con "PK"
     const buf = await file.arrayBuffer();
     const u8 = new Uint8Array(buf);
+    // ¿es una foto o captura suelta? entonces va como fondo para calzar a mano
+    const esJpg = u8[0]===0xFF && u8[1]===0xD8;
+    const esPng = u8[0]===0x89 && u8[1]===0x50 && u8[2]===0x4E && u8[3]===0x47;
+    if(esJpg || esPng){
+      await ponerFondoSuelto(new Blob([buf], {type: esJpg?'image/jpeg':'image/png'}), file.name);
+      return;
+    }
     const esZip = u8[0]===0x50 && u8[1]===0x4B;
-    const figs = parseGeo(esZip ? await abrirKmz(buf) : new TextDecoder().decode(buf));
-    if(!figs.length){ toast('No encontré líneas ni contornos en ese archivo.', 5000); return; }
+    let zip = null, texto;
+    if(esZip){
+      zip = leerZip(buf);
+      const nk = Object.keys(zip).find(n=>/\.kml$/i.test(n));
+      if(!nk) throw new Error('el KMZ no tiene ningún KML adentro');
+      texto = new TextDecoder().decode(await inflar(zip[nk]));
+    } else texto = new TextDecoder().decode(buf);
+
+    const figs = parseGeo(texto);
+    const conImagen = await cargarOverlay(texto, zip);
+    if(!figs.length){
+      toast(conImagen ? 'Imagen de fondo cargada y ubicada por sus coordenadas.'
+                      : 'No encontré líneas ni contornos en ese archivo.', 5000);
+      return;
+    }
     // sin GPS todavía: el origen se fija en el medio del lote
     if(!origin){
       let la=0, lo=0, n=0;
@@ -854,7 +950,16 @@ function quitarMapa(){
 // vuelve a cargarse solo al abrir la app
 try{
   const g = JSON.parse(localStorage.getItem('bg_geo')||'null');
-  if(g && g.figs && g.figs.length){ geo = {nombre:g.nombre, figs:g.figs, ha:0}; }
+  if(g && g.figs && g.figs.length){
+    geo = {nombre:g.nombre, figs:g.figs, ha:0};
+    // sin GPS todavía el origen no existe, y sin origen no se puede dibujar nada:
+    // se lo pone en el medio del lote guardado y se recentra si el GPS aparece lejos
+    if(!origin){
+      let la=0, lo=0, n=0;
+      for(const f of geo.figs) for(const p of f.ll){ la+=p[0]; lo+=p[1]; n++; }
+      if(n){ llToXY(la/n, lo/n); geoProyectar(); }
+    }
+  }
 }catch(e){}
 
 /* Si la app se abrió desde "Compartir" de otra app (el mail, WhatsApp), el
@@ -870,6 +975,126 @@ if(/[?&]compartido=1/.test(location.search)){
       await cargarMapa(new File([blob], nombre));
     }))
     .catch(()=>{});
+}
+
+/* ============ imagen de fondo del lote ============
+   Dos caminos: si el KMZ trae la imagen ya georreferenciada (un GroundOverlay,
+   que es lo que exporta Google Earth), se ubica sola y queda exacta. Si es una
+   foto o captura suelta, se apoya sobre el lote y se calza a mano una vez. */
+let fondo = null;   // {img, x0, y0, w, h, rot, alpha, ll:{lat,lon} de referencia}
+
+const MAXPX = 2048;             // tope para no ahogar al teléfono con fotos enormes
+async function imagenDesdeBlob(blob){
+  const bmp = await createImageBitmap(blob);
+  if(Math.max(bmp.width, bmp.height) <= MAXPX) return bmp;
+  const k = MAXPX/Math.max(bmp.width, bmp.height);
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width*k); c.height = Math.round(bmp.height*k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close && bmp.close();
+  return await createImageBitmap(c);
+}
+
+// el fondo se guarda en lat/lon, igual que las figuras, para que aguante
+// cualquier origen de coordenadas
+function fondoProyectar(){
+  if(!fondo || !fondo.ll || !origin) return;
+  const so = llToXY(fondo.ll.sur, fondo.ll.oeste);
+  fondo.x0 = so.x; fondo.y0 = so.y;
+  const ne = llToXY(fondo.ll.norte, fondo.ll.este);
+  fondo.w = ne.x - so.x; fondo.h = ne.y - so.y;
+  fondo.orig = origin;
+}
+function fondoListo(){
+  if(!fondo || !fondo.img) return false;
+  if(fondo.ll && origin && fondo.orig !== origin) fondoProyectar();
+  return isFinite(fondo.x0) && fondo.w > 0;
+}
+// al mover o escalar a mano hay que reescribir el lat/lon guardado
+function fondoActualizarLL(){
+  if(!fondo || !origin) return;
+  fondo.ll = {
+    sur:   origin.lat + fondo.y0/origin.ky,
+    oeste: origin.lon + fondo.x0/origin.kx,
+    norte: origin.lat + (fondo.y0+fondo.h)/origin.ky,
+    este:  origin.lon + (fondo.x0+fondo.w)/origin.kx
+  };
+  fondo.orig = origin;
+}
+
+function guardarFondo(){
+  if(!fondo || !fondo.blob) return Promise.resolve();
+  fondoActualizarLL();
+  return kvSet('fondo', {blob:fondo.blob, ll:fondo.ll, rot:fondo.rot||0,
+                         alpha:fondo.alpha, exacto:!!fondo.exacto}).catch(()=>{});
+}
+async function cargarFondoGuardado(){
+  try{
+    const f = await kvGet('fondo');
+    if(!f || !f.blob) return;
+    fondo = { blob:f.blob, ll:f.ll, rot:f.rot||0, alpha:f.alpha==null?1:f.alpha,
+              exacto:!!f.exacto, img:null };
+    fondo.img = await imagenDesdeBlob(f.blob);
+    if(!origin && fondo.ll)
+      llToXY((fondo.ll.norte+fondo.ll.sur)/2, (fondo.ll.este+fondo.ll.oeste)/2);
+    fondoProyectar();
+    syncFondoUI();
+  }catch(e){}
+}
+function quitarFondo(){
+  fondo = null; S.ajustando = false;
+  kvDel('fondo').catch(()=>{});
+  syncFondoUI();
+  toast('Imagen de fondo quitada.');
+}
+function syncFondoUI(){
+  const hay = !!(fondo && fondo.img);
+  for(const el of document.querySelectorAll('.fondoLbl'))
+    el.textContent = hay ? (fondo.exacto ? 'sí, ubicada por el archivo' : 'sí, ajustada a mano') : 'ninguna';
+  for(const el of document.querySelectorAll('.fondoQuitar')) el.style.display = hay ? 'block' : 'none';
+  for(const el of document.querySelectorAll('.fondoAjustar')) el.style.display = hay ? 'block' : 'none';
+  $('ajusteBar').style.display = S.ajustando ? 'flex' : 'none';
+}
+
+// imagen suelta: se apoya sobre el lote (o alrededor del tractor) para calzarla
+async function ponerFondoSuelto(blob, nombre){
+  const img = await imagenDesdeBlob(blob);
+  let cx=0, cy=0, anchoM=300;
+  if(geoListo()){
+    let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+    for(const f of geo.figs) if(f.bb){
+      x0=Math.min(x0,f.bb.x0); y0=Math.min(y0,f.bb.y0);
+      x1=Math.max(x1,f.bb.x1); y1=Math.max(y1,f.bb.y1);
+    }
+    if(isFinite(x0)){ cx=(x0+x1)/2; cy=(y0+y1)/2; anchoM=Math.max(x1-x0, 60)*1.15; }
+  }else if(S.pos){ cx=S.pos.x; cy=S.pos.y; }
+  const altoM = anchoM*img.height/img.width;
+  fondo = { img, blob, rot:0, alpha:1, exacto:false,
+            x0:cx-anchoM/2, y0:cy-altoM/2, w:anchoM, h:altoM };
+  fondoActualizarLL();
+  await guardarFondo();
+  syncFondoUI();
+  entrarAjuste();
+  toast('Movela y agrandala con los dedos hasta que calce con el lote. Después tocá Listo.', 7000);
+}
+
+let ajustePrev = null;
+function entrarAjuste(){
+  if(!fondo) return;
+  S.ajustando = true; salirVista();
+  // el mapa se fija al norte mientras se calza: si sigue girando con el tractor,
+  // la imagen se escapa de abajo del dedo
+  ajustePrev = { courseUp: S.courseUp };
+  S.courseUp = false;
+  $('settings').style.display = 'none';
+  syncFondoUI();
+}
+function salirAjuste(){
+  S.ajustando = false;
+  if(ajustePrev){ S.courseUp = ajustePrev.courseUp; ajustePrev = null; }
+  guardarFondo();
+  syncFondoUI();
+  toast('Fondo guardado. Queda en el teléfono aunque cierres la app.', 4000);
 }
 
 /* ============ exportar el trabajo (KMZ para Google Earth) ============
@@ -1136,10 +1361,14 @@ const ledEls = ledsEl.children;
 
 function updateHUD(){
   $('stSpeed').textContent = (S.speed*3.6).toFixed(1);
-  $('stAcc').textContent = S.acc==null ? '–' : S.acc.toFixed(0);
-  const dot=$('gpsdot');
-  dot.style.background = S.demo ? 'var(--amber)' :
+  $('stAcc').textContent = S.acc==null ? '–' : S.acc.toFixed(1);
+  const color = S.demo ? 'var(--amber)' :
     S.acc==null ? 'var(--muted)' : S.acc<4 ? 'var(--green-bright)' : S.acc<10 ? 'var(--amber)' : 'var(--red)';
+  $('gpsdot').style.background = color;
+  // precisión del satélite, arriba a la derecha
+  $('gpsBoxVal').textContent = S.demo ? 'demo' : (S.acc==null ? '–' : S.acc.toFixed(1));
+  $('gpsBoxVal').style.color = color==='var(--muted)' ? 'var(--muted)' : color;
+  $('gpsBoxDot').style.background = color;
   $('stHa').textContent = (S.areaCells*CELL*CELL/10000).toFixed(2);
   $('stOv').textContent = S.areaCells ? (S.overlapCells/S.areaCells*100).toFixed(1) : '0.0';
   if(S.mark && S.pos){
@@ -1512,6 +1741,26 @@ function draw(){
   ctx.translate(cx,cy); ctx.rotate(rot); ctx.scale(s,-s);
   ctx.translate(-camX, -camY);
 
+  // imagen de fondo del lote, debajo de todo
+  if(fondoListo()){
+    ctx.save();
+    ctx.globalAlpha = S.ajustando ? 0.85 : (fondo.alpha==null?1:fondo.alpha);
+    ctx.translate(fondo.x0 + fondo.w/2, fondo.y0 + fondo.h/2);
+    if(fondo.rot) ctx.rotate(fondo.rot);
+    ctx.scale(1,-1);                       // el eje Y del mundo va al revés que el de la imagen
+    ctx.drawImage(fondo.img, -fondo.w/2, -fondo.h/2, fondo.w, fondo.h);
+    ctx.restore();
+    if(S.ajustando){                       // marco mientras se la está calzando
+      ctx.strokeStyle='#FFD400'; ctx.lineWidth=2.5/S.zoom; ctx.setLineDash([8/S.zoom,6/S.zoom]);
+      ctx.save();
+      ctx.translate(fondo.x0 + fondo.w/2, fondo.y0 + fondo.h/2);
+      if(fondo.rot) ctx.rotate(fondo.rot);
+      ctx.strokeRect(-fondo.w/2, -fondo.h/2, fondo.w, fondo.h);
+      ctx.restore();
+      ctx.setLineDash([]);
+    }
+  }
+
   // grilla de referencia cada 50 m
   ctx.strokeStyle='rgba(143,163,145,0.10)'; ctx.lineWidth=1/s;
   ctx.beginPath();
@@ -1718,10 +1967,21 @@ function draw(){
 requestAnimationFrame(loop);
 
 /* ================= GPS ================= */
+// el origen quedó puesto por un mapa guardado y el campo real está en otro lado:
+// se lo muda a la posición actual y se reproyecta todo (que está en lat/lon)
+function reubicarOrigen(lat, lon){
+  origin = {lat, lon, kx: 111320*Math.cos(lat*Math.PI/180), ky: 110540};
+  if(geo) geoProyectar();
+  if(fondo) fondoProyectar();
+}
 function startGPS(){
   if(!navigator.geolocation){ toast('Este dispositivo no tiene GPS disponible en el navegador'); return; }
   navigator.geolocation.watchPosition(p=>{
     S.acc = p.coords.accuracy;
+    if(origin && S.areaCells===0){
+      const dx=(p.coords.longitude-origin.lon)*origin.kx, dy=(p.coords.latitude-origin.lat)*origin.ky;
+      if(Math.hypot(dx,dy) > EXT-200) reubicarOrigen(p.coords.latitude, p.coords.longitude);
+    }
     const {x,y} = llToXY(p.coords.latitude, p.coords.longitude);
     onFix(x, y, {speed:p.coords.speed, heading:p.coords.heading});
   }, e=>{
@@ -1809,6 +2069,29 @@ for(const b of document.querySelectorAll('.geoCargar'))
   b.addEventListener('click', ()=>$('geoFile').click());
 for(const b of document.querySelectorAll('.geoQuitar'))
   b.addEventListener('click', quitarMapa);
+for(const b of document.querySelectorAll('.fondoQuitar'))
+  b.addEventListener('click', quitarFondo);
+for(const b of document.querySelectorAll('.fondoAjustar'))
+  b.addEventListener('click', entrarAjuste);
+$('ajListo').addEventListener('click', salirAjuste);
+$('ajMas').addEventListener('click', ()=>escalarFondo(1.08));
+$('ajMenos').addEventListener('click', ()=>escalarFondo(1/1.08));
+$('ajRotL').addEventListener('click', ()=>{ if(fondo){ fondo.rot=(fondo.rot||0)-Math.PI/90; } });
+$('ajRotR').addEventListener('click', ()=>{ if(fondo){ fondo.rot=(fondo.rot||0)+Math.PI/90; } });
+$('ajTrans').addEventListener('click', ()=>{
+  if(!fondo) return;
+  const pasos=[1,0.75,0.5,0.3];
+  const i = pasos.indexOf(fondo.alpha==null?1:fondo.alpha);
+  fondo.alpha = pasos[(i+1)%pasos.length];
+  toast('Transparencia del fondo: '+Math.round(fondo.alpha*100)+'%', 2000);
+});
+function escalarFondo(k){
+  if(!fondo) return;
+  const cx=fondo.x0+fondo.w/2, cy=fondo.y0+fondo.h/2;
+  fondo.w*=k; fondo.h*=k;
+  fondo.x0=cx-fondo.w/2; fondo.y0=cy-fondo.h/2;
+  fondo.exacto=false;
+}
 syncGeoUI();
 
 // si hay un trabajo guardado, ofrecer retomarlo
@@ -1913,6 +2196,7 @@ function entrarVista(){
     meter((covBB.x0-HALF)*CELL, (covBB.y0-HALF)*CELL);
     meter((covBB.x1+1-HALF)*CELL, (covBB.y1+1-HALF)*CELL);
   }
+  if(fondoListo()){ meter(fondo.x0, fondo.y0); meter(fondo.x0+fondo.w, fondo.y0+fondo.h); }
   if(S.A) meter(S.A.x, S.A.y);
   if(S.B) meter(S.B.x, S.B.y);
   if(S.pos) meter(S.pos.x, S.pos.y);
@@ -1937,26 +2221,69 @@ $('rotBtn').addEventListener('click', ()=>{
   toast(S.courseUp ? 'Rumbo arriba' : 'Norte arriba', 1500);
 });
 
-// pellizco para zoom
-let pinch0=null;
+// pellizco para zoom; con el ajuste activo, los dedos mueven la imagen de fondo
+let pinch0=null, arrastre=null;
+const dedo = t => ({x:t.clientX, y:t.clientY});
+// pasa de píxeles de pantalla a metros del mundo (respetando el giro del mapa)
+function pantallaAMundo(dx, dy, rot0){
+  const rot = rot0!=null ? rot0 : (S.courseUp ? -camH : 0);
+  const c=Math.cos(-rot), s2=Math.sin(-rot);
+  const mx = (dx*c - dy*s2)/S.zoom, my = -(dx*s2 + dy*c)/S.zoom;
+  return {x:mx, y:my};
+}
 cvs.addEventListener('touchstart', e=>{
   if(e.touches.length===2){
-    pinch0={d:Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY), z:S.zoom};
+    pinch0={d:Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY),
+            z:S.zoom, w:fondo?fondo.w:0, h:fondo?fondo.h:0,
+            cx:fondo?fondo.x0+fondo.w/2:0, cy:fondo?fondo.y0+fondo.h/2:0};
+    arrastre=null;
+  } else if(e.touches.length===1 && S.ajustando && fondo){
+    arrastre={...dedo(e.touches[0]), x0:fondo.x0, y0:fondo.y0, rot:S.courseUp?-camH:0};
   }
 },{passive:true});
 cvs.addEventListener('touchmove', e=>{
   if(pinch0 && e.touches.length===2){
     const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
-    S.zoom=clamp(pinch0.z*d/pinch0.d,0.6,40);
+    const k = d/pinch0.d;
+    if(S.ajustando && fondo){
+      fondo.w = pinch0.w*k; fondo.h = pinch0.h*k;
+      fondo.x0 = pinch0.cx-fondo.w/2; fondo.y0 = pinch0.cy-fondo.h/2;
+      fondo.exacto = false;
+    } else {
+      S.zoom=clamp(pinch0.z*k,0.6,40);
+    }
+    e.preventDefault();
+  } else if(arrastre && e.touches.length===1 && S.ajustando && fondo){
+    const p = dedo(e.touches[0]);
+    const m = pantallaAMundo(p.x-arrastre.x, p.y-arrastre.y, arrastre.rot);
+    fondo.x0 = arrastre.x0 + m.x; fondo.y0 = arrastre.y0 + m.y;
+    fondo.exacto = false;
     e.preventDefault();
   }
 },{passive:false});
-cvs.addEventListener('touchend', ()=>{ pinch0=null; });
+cvs.addEventListener('touchend', ()=>{ pinch0=null; arrastre=null; });
+
+// con mouse (para probar en la computadora)
+cvs.addEventListener('mousedown', e=>{
+  if(S.ajustando && fondo) arrastre={x:e.clientX, y:e.clientY, x0:fondo.x0, y0:fondo.y0, rot:S.courseUp?-camH:0};
+});
+addEventListener('mousemove', e=>{
+  if(arrastre && S.ajustando && fondo){
+    const m = pantallaAMundo(e.clientX-arrastre.x, e.clientY-arrastre.y, arrastre.rot);
+    fondo.x0 = arrastre.x0 + m.x; fondo.y0 = arrastre.y0 + m.y;
+    fondo.exacto = false;
+  }
+});
+addEventListener('mouseup', ()=>{ if(!pinch0) arrastre=null; });
 
 syncWidthInputs(); abLabel(); updateHUD();
+syncFondoUI(); cargarFondoGuardado();
 
 // gancho de depuración
-window.BG = {S, onFix, stamp, guidance, draw, saveWork, demoPos:demoP, get demoH(){return demoH}, set demoH(v){demoH=v}};
+window.BG = {S, onFix, stamp, guidance, draw, saveWork, demoPos:demoP,
+  get demoH(){return demoH}, set demoH(v){demoH=v},
+  get fondo(){return fondo}, get geo(){return geo}, get origin(){return origin},
+  get cam(){return {camX, camY, camH, zoom:S.zoom}}};
 })();
 </script>
 
