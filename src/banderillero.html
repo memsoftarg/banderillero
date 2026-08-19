@@ -1,5 +1,5 @@
 <meta charset="utf-8">
-<title>Banderillero GPS</title>
+<title>Banderillero</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <style>
   :root{
@@ -221,7 +221,7 @@
     <div class="brand">
       <img src="icon-192.png" alt="" onerror="this.style.display='none'">
       <div>
-        <h1>Banderillero GPS</h1>
+        <h1>Banderillero</h1>
         <h2>Guía satelital para pulverización y siembra</h2>
       </div>
     </div>
@@ -295,8 +295,11 @@
       <label>Imagen de fondo del lote</label>
       <button class="big alt geoCargar" style="margin-top:0">🖼 Cargar imagen o KMZ con imagen</button>
       <div class="geoInfo">Cargada: <b class="fondoLbl">ninguna</b></div>
+      <button class="big alt" id="satBtn">🛰 Bajar imagen satelital del lote</button>
       <button class="big alt fondoAjustar" style="display:none">✥ Mover y calzar la imagen</button>
       <button class="big danger fondoQuitar" style="display:none">Quitar la imagen de fondo</button>
+      <div class="geoInfo">La imagen satelital se baja una sola vez <b>con internet</b> y
+        después funciona en el campo sin señal. Imágenes: Esri, Vantor, Earthstar Geographics.</div>
     </div>
     <div class="field" id="lineasBox" style="display:none">
       <label>Líneas: qué se hizo y qué falta</label>
@@ -1007,14 +1010,15 @@ function guardarFondo(){
   if(!fondo || !fondo.blob) return Promise.resolve();
   fondoActualizarLL();
   return kvSet('fondo', {blob:fondo.blob, ll:fondo.ll, rot:fondo.rot||0,
-                         alpha:fondo.alpha, exacto:!!fondo.exacto}).catch(()=>{});
+                         alpha:fondo.alpha, exacto:!!fondo.exacto,
+                         satelital:!!fondo.satelital}).catch(()=>{});
 }
 async function cargarFondoGuardado(){
   try{
     const f = await kvGet('fondo');
     if(!f || !f.blob) return;
     fondo = { blob:f.blob, ll:f.ll, rot:f.rot||0, alpha:f.alpha==null?1:f.alpha,
-              exacto:!!f.exacto, img:null };
+              exacto:!!f.exacto, satelital:!!f.satelital, img:null };
     fondo.img = await imagenDesdeBlob(f.blob);
     if(!origin && fondo.ll)
       llToXY((fondo.ll.norte+fondo.ll.sur)/2, (fondo.ll.este+fondo.ll.oeste)/2);
@@ -1031,13 +1035,112 @@ function quitarFondo(){
 function syncFondoUI(){
   const hay = !!(fondo && fondo.img);
   for(const el of document.querySelectorAll('.fondoLbl'))
-    el.textContent = hay ? (fondo.exacto ? 'sí, ubicada por el archivo' : 'sí, ajustada a mano') : 'ninguna';
+    el.textContent = !hay ? 'ninguna'
+      : fondo.satelital ? 'satelital, guardada para usar sin señal'
+      : fondo.exacto ? 'sí, ubicada por el archivo' : 'sí, ajustada a mano';
   for(const el of document.querySelectorAll('.fondoQuitar')) el.style.display = hay ? 'block' : 'none';
   for(const el of document.querySelectorAll('.fondoAjustar')) el.style.display = hay ? 'block' : 'none';
   $('ajusteBar').style.display = S.ajustando ? 'flex' : 'none';
 }
 
 // imagen suelta: se apoya sobre el lote (o alrededor del tractor) para calzarla
+/* ---- imagen satelital: se baja una vez con señal y queda guardada ----
+   No se puede usar la de Google: sus condiciones no permiten sacar los mosaicos
+   de sus servidores ni guardarlos para usarlos afuera, que es justo lo que hace
+   falta para que ande sin señal en el campo. Se usa Esri World Imagery, que sí
+   deja bajarla desde el navegador; va con su atribución. */
+const TILE_URL = z => (x,y) =>
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/'+z+'/'+y+'/'+x;
+const lon2tx = (lon,z)=> (lon+180)/360*Math.pow(2,z);
+const lat2ty = (lat,z)=>{ const r=lat*Math.PI/180;
+  return (1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*Math.pow(2,z); };
+const tx2lon = (x,z)=> x/Math.pow(2,z)*360-180;
+const ty2lat = (y,z)=>{ const n=Math.PI-2*Math.PI*y/Math.pow(2,z);
+  return 180/Math.PI*Math.atan(0.5*(Math.exp(n)-Math.exp(-n))); };
+
+// qué pedazo de campo hay que cubrir: el lote cargado, lo ya trabajado, o
+// una manzana alrededor del tractor
+function areaParaBajar(){
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  const meter=(x,y)=>{ if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y; };
+  if(geoListo()) for(const f of geo.figs) if(f.bb){ meter(f.bb.x0,f.bb.y0); meter(f.bb.x1,f.bb.y1); }
+  if(covBB){
+    meter((covBB.x0-HALF)*CELL,(covBB.y0-HALF)*CELL);
+    meter((covBB.x1+1-HALF)*CELL,(covBB.y1+1-HALF)*CELL);
+  }
+  if(!isFinite(x0) && S.pos){ meter(S.pos.x-400,S.pos.y-400); meter(S.pos.x+400,S.pos.y+400); }
+  if(!isFinite(x0)) return null;
+  const m = Math.max(60, Math.max(x1-x0, y1-y0)*0.08);   // un poco de aire
+  return {x0:x0-m, y0:y0-m, x1:x1+m, y1:y1+m};
+}
+
+async function bajarSatelital(){
+  if(!origin){ toast('Primero cargá el mapa del lote o empezá a trabajar.', 5000); return; }
+  const a = areaParaBajar();
+  if(!a){ toast('Todavía no sé qué zona bajar: cargá el lote o empezá a trabajar.', 5000); return; }
+  if(!navigator.onLine){ toast('Necesitás internet para bajar la imagen. Hacelo antes de salir al campo.', 6000); return; }
+
+  const norte = origin.lat + a.y1/origin.ky, sur = origin.lat + a.y0/origin.ky;
+  const este  = origin.lon + a.x1/origin.kx, oeste = origin.lon + a.x0/origin.kx;
+  const ladoM = Math.max(a.x1-a.x0, a.y1-a.y0);
+
+  // el zoom más detallado que entre en 2048 px, sin pasarse de 19
+  let z = 19;
+  while(z > 13){
+    const res = 156543.03392 * Math.cos(origin.lat*Math.PI/180) / Math.pow(2,z); // m por pixel
+    if(ladoM/res <= MAXPX) break;
+    z--;
+  }
+  const tx0 = Math.floor(lon2tx(oeste,z)), tx1 = Math.floor(lon2tx(este,z));
+  const ty0 = Math.floor(lat2ty(norte,z)), ty1 = Math.floor(lat2ty(sur,z));
+  const nx = tx1-tx0+1, ny = ty1-ty0+1, total = nx*ny;
+  if(total > 200){ toast('El área es demasiado grande para bajar de una vez.', 6000); return; }
+
+  const btn = $('satBtn'); const txt0 = btn.textContent;
+  btn.disabled = true;
+  const cvsT = document.createElement('canvas');
+  cvsT.width = nx*256; cvsT.height = ny*256;
+  const g = cvsT.getContext('2d');
+  const url = TILE_URL(z);
+  let listos = 0, fallados = 0;
+
+  const tareas = [];
+  for(let ty=ty0; ty<=ty1; ty++) for(let tx=tx0; tx<=tx1; tx++){
+    tareas.push({tx, ty});
+  }
+  // de a 6 por vez: más rápido que uno por uno y sin saturar la conexión del campo
+  for(let i=0; i<tareas.length; i+=6){
+    await Promise.all(tareas.slice(i,i+6).map(async t=>{
+      try{
+        const r = await fetch(url(t.tx,t.ty), {mode:'cors'});
+        if(!r.ok) throw new Error(r.status);
+        const bmp = await createImageBitmap(await r.blob());
+        g.drawImage(bmp, (t.tx-tx0)*256, (t.ty-ty0)*256);
+        bmp.close && bmp.close();
+      }catch(e){ fallados++; }
+      listos++;
+      btn.textContent = 'Bajando '+listos+' de '+total+'…';
+    }));
+  }
+  btn.disabled = false; btn.textContent = txt0;
+  if(fallados >= total){ toast('No pude bajar la imagen. Fijate que tengas internet.', 6000); return; }
+
+  // el bloque de mosaicos cubre un poco más que el lote: ésas son sus coordenadas
+  const llN = ty2lat(ty0, z), llS = ty2lat(ty1+1, z);
+  const llO = tx2lon(tx0, z), llE = tx2lon(tx1+1, z);
+
+  const blob = await new Promise(r=>cvsT.toBlob(r, 'image/jpeg', 0.85));
+  fondo = { blob, ll:{norte:llN, sur:llS, este:llE, oeste:llO}, rot:0, alpha:1,
+            exacto:true, satelital:true, img:null };
+  fondo.img = await imagenDesdeBlob(blob);
+  fondoProyectar();
+  await guardarFondo();
+  syncFondoUI();
+  const kb = Math.round(blob.size/1024);
+  toast('Imagen satelital lista ('+kb+' kB, '+(fallados?fallados+' mosaicos fallaron, ':'')+
+        'zoom '+z+'). Ya funciona sin señal.', 6000);
+}
+
 async function ponerFondoSuelto(blob, nombre){
   const img = await imagenDesdeBlob(blob);
   let cx=0, cy=0, anchoM=300;
@@ -1932,6 +2035,13 @@ function draw(){
 
   ctx.restore();
 
+  // atribución de la imagen satelital (la piden sus condiciones de uso)
+  if(fondo && fondo.satelital && fondoListo()){
+    ctx.fillStyle='rgba(233,239,233,0.45)';
+    ctx.font=(9*dpr)+'px system-ui';
+    ctx.fillText('Imágenes: Esri', 8*dpr, 178*dpr);   // arriba: abajo lo tapa el panel
+  }
+
   // brújula (norte en pantalla)
   const na = Math.atan2(-Math.cos(rot), Math.sin(rot)); // ángulo pantalla del vector norte
   const bx=W-34*dpr, by=(118)*dpr, br=14*dpr;
@@ -2054,6 +2164,7 @@ for(const b of document.querySelectorAll('.fondoQuitar'))
   b.addEventListener('click', quitarFondo);
 for(const b of document.querySelectorAll('.fondoAjustar'))
   b.addEventListener('click', entrarAjuste);
+$('satBtn').addEventListener('click', bajarSatelital);
 $('ajListo').addEventListener('click', salirAjuste);
 $('ajMas').addEventListener('click', ()=>escalarFondo(1.08));
 $('ajMenos').addEventListener('click', ()=>escalarFondo(1/1.08));

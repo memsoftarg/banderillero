@@ -1,4 +1,4 @@
-# Banderillero GPS 🚜
+# Banderillero 🚜
 
 Guía satelital para pulverización y siembra, pensada para usar en un celular o tablet
 montado en el tractor. App web de un solo archivo, instalable (PWA) y 100% offline.
@@ -21,6 +21,8 @@ montado en el tractor. App web de un solo archivo, instalable (PWA) y 100% offli
 - Terminar el trabajo y volver al inicio sin cerrar la app
 - Imagen de fondo del lote: KMZ con GroundOverlay (se ubica solo por sus coordenadas) o
   JPG/PNG suelto que se calza a mano con los dedos; queda guardada en el teléfono
+- Imagen satelital del lote descargada de una vez con internet y guardada para usar sin señal
+  (Esri World Imagery; los mosaicos de Google no se pueden usar así por sus condiciones)
 - Precisión del GPS en metros arriba a la derecha
 - Exportar el trabajo a KMZ para abrirlo en Google Earth: lo aplicado como imagen sobre el
   terreno, las líneas con su estado, la línea A-B y el resumen de hectáreas y solape
