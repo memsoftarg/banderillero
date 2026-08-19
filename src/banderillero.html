@@ -107,6 +107,17 @@
   .abtn:active{filter:brightness(1.4)}
   .abtn.listo{flex:1.5; background:var(--green); color:#08140A; border-color:var(--green); font-size:16px}
 
+  /* ---------- volver al tractor ---------- */
+  #volverBtn{
+    position:fixed; left:50%; transform:translateX(-50%); z-index:12;
+    bottom:calc(186px + env(safe-area-inset-bottom));   /* despejado del panel y del volante */
+    min-height:46px; padding:0 20px; border-radius:23px;
+    box-shadow:0 3px 12px rgba(0,0,0,.5);
+    border:1px solid var(--amber); background:rgba(20,28,21,.95); color:var(--amber);
+    font-size:15px; font-weight:800;
+  }
+  #volverBtn:active{background:var(--amber); color:#1A1206}
+
   /* ---------- aviso ---------- */
   #toast{
     position:fixed; top:110px; left:50%; transform:translateX(-50%); z-index:40;
@@ -206,6 +217,8 @@
   <button class="abtn listo" id="ajListo">Listo</button>
 </div>
 
+<button id="volverBtn" style="display:none">🚜 Volver al tractor</button>
+
 <div id="toast"></div>
 
 <div id="controls">
@@ -250,7 +263,8 @@
       si te salís; las líneas, en celeste. Si instalaste la app, también podés mandarte el
       archivo por mail o WhatsApp y usar <b>Compartir → Banderillero</b>: se abre con el lote
       ya cargado. Las líneas se pintan de verde solas a medida que las vas haciendo, y en
-      Ajustes ves cuáles faltan. El botón <b>🗺</b> te muestra el lote entero de un vistazo,
+      Ajustes ves cuáles faltan. Podés <b>arrastrar el mapa con el dedo</b> para mirar otra
+      parte del lote; aparece un botón para volver al tractor. El botón <b>🗺</b> te muestra el lote entero de un vistazo,
       con lo hecho en verde y lo que falta en celeste; tocalo de nuevo para volver al tractor.
       <br><br><b>Al terminar:</b> desde Ajustes, <b>Exportar trabajo</b> te arma un archivo
       para abrir en Google Earth en la computadora, con lo aplicado, las hectáreas y el solape.
@@ -349,6 +363,7 @@ const S = {
   zoom: 7,              // px CSS por metro
   courseUp: true,
   vista: false,          // vista general de todo el lote (la cámara deja de seguir al tractor)
+  libre: false,          // la vista se movió con el dedo y dejó de seguir al tractor
   ajustando: false,      // calzando la imagen de fondo a mano
   guia: null,            // {i, fase} línea elegida para ir a hacerla
   guiaNombre: '',
@@ -1809,7 +1824,7 @@ function draw(){
 
   // la cámara persigue suave al tractor (sin saltos entre fixes del GPS)
   if(!camOn){ camX=S.pos.x; camY=S.pos.y; camH=S.heading; camOn=true; }
-  if(!S.vista){                       // en la vista general la cámara queda quieta
+  if(!S.vista && !S.libre){           // quieta en la vista general y con el mapa movido a mano
     camX += (S.pos.x-camX)*0.35; camY += (S.pos.y-camY)*0.35;
     let dh = S.heading-camH; dh = Math.atan2(Math.sin(dh), Math.cos(dh));
     camH += dh*0.30;
@@ -2123,6 +2138,7 @@ $('widthInp').addEventListener('change', e=>setWidth(e.target.value));
 $('widthInp2').addEventListener('change', e=>setWidth(e.target.value));
 
 function start(demo, resumed){
+  S.libre = false; syncLibreUI();
   S.demo = demo; S.started = true; S.giro = 0;
   initGrid();
   $('setup').style.display='none';
@@ -2280,6 +2296,7 @@ function salirVista(){
   $('verLote').classList.remove('on');
 }
 function entrarVista(){
+  S.libre = false; syncLibreUI();
   const W = cvs.width/dpr, H = cvs.height/dpr;
   let x0=Infinity, y0=Infinity, x1=-Infinity, y1=-Infinity;
   const meter = (x,y)=>{ if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y; };
@@ -2313,7 +2330,8 @@ $('rotBtn').addEventListener('click', ()=>{
   toast(S.courseUp ? 'Rumbo arriba' : 'Norte arriba', 1500);
 });
 
-// pellizco para zoom; con el ajuste activo, los dedos mueven la imagen de fondo
+// Gestos sobre el mapa: un dedo arrastra, dos dedos hacen zoom. Con el ajuste
+// de la imagen activo los mismos gestos mueven y agrandan la imagen.
 let pinch0=null, arrastre=null;
 const dedo = t => ({x:t.clientX, y:t.clientY});
 // pasa de píxeles de pantalla a metros del mundo (respetando el giro del mapa)
@@ -2323,14 +2341,45 @@ function pantallaAMundo(dx, dy, rot0){
   const mx = (dx*c - dy*s2)/S.zoom, my = -(dx*s2 + dy*c)/S.zoom;
   return {x:mx, y:my};
 }
+function empezarArrastre(px, py){
+  if(!S.started) return;
+  const sobreFondo = S.ajustando && fondo;
+  arrastre = { x:px, y:py, rot:S.courseUp?-camH:0, modo: sobreFondo ? 'fondo' : 'vista',
+               x0: sobreFondo ? fondo.x0 : camX, y0: sobreFondo ? fondo.y0 : camY, movido:0 };
+}
+function seguirArrastre(px, py){
+  if(!arrastre) return false;
+  const dx = px-arrastre.x, dy = py-arrastre.y;
+  arrastre.movido = Math.max(arrastre.movido, Math.hypot(dx,dy));
+  if(arrastre.movido < 4) return false;             // un toque no debería mover nada
+  const m = pantallaAMundo(dx, dy, arrastre.rot);
+  if(arrastre.modo === 'fondo'){
+    if(!fondo) return false;
+    fondo.x0 = arrastre.x0 + m.x; fondo.y0 = arrastre.y0 + m.y;
+    fondo.exacto = false;
+  } else {
+    // la vista se despega del tractor y queda donde la dejaste
+    if(!S.libre){ S.libre = true; if(S.vista) salirVista(); syncLibreUI(); }
+    camX = arrastre.x0 - m.x; camY = arrastre.y0 - m.y;
+  }
+  return true;
+}
+function volverAlTractor(){
+  S.libre = false;
+  syncLibreUI();
+}
+function syncLibreUI(){
+  $('volverBtn').style.display = (S.libre && S.started) ? 'block' : 'none';
+}
+
 cvs.addEventListener('touchstart', e=>{
   if(e.touches.length===2){
     pinch0={d:Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY),
             z:S.zoom, w:fondo?fondo.w:0, h:fondo?fondo.h:0,
             cx:fondo?fondo.x0+fondo.w/2:0, cy:fondo?fondo.y0+fondo.h/2:0};
     arrastre=null;
-  } else if(e.touches.length===1 && S.ajustando && fondo){
-    arrastre={...dedo(e.touches[0]), x0:fondo.x0, y0:fondo.y0, rot:S.courseUp?-camH:0};
+  } else if(e.touches.length===1){
+    empezarArrastre(e.touches[0].clientX, e.touches[0].clientY);
   }
 },{passive:true});
 cvs.addEventListener('touchmove', e=>{
@@ -2345,28 +2394,18 @@ cvs.addEventListener('touchmove', e=>{
       S.zoom=clamp(pinch0.z*k,0.6,40);
     }
     e.preventDefault();
-  } else if(arrastre && e.touches.length===1 && S.ajustando && fondo){
-    const p = dedo(e.touches[0]);
-    const m = pantallaAMundo(p.x-arrastre.x, p.y-arrastre.y, arrastre.rot);
-    fondo.x0 = arrastre.x0 + m.x; fondo.y0 = arrastre.y0 + m.y;
-    fondo.exacto = false;
-    e.preventDefault();
+  } else if(arrastre && e.touches.length===1){
+    if(seguirArrastre(e.touches[0].clientX, e.touches[0].clientY)) e.preventDefault();
   }
 },{passive:false});
 cvs.addEventListener('touchend', ()=>{ pinch0=null; arrastre=null; });
+cvs.addEventListener('touchcancel', ()=>{ pinch0=null; arrastre=null; });
 
-// con mouse (para probar en la computadora)
-cvs.addEventListener('mousedown', e=>{
-  if(S.ajustando && fondo) arrastre={x:e.clientX, y:e.clientY, x0:fondo.x0, y0:fondo.y0, rot:S.courseUp?-camH:0};
-});
-addEventListener('mousemove', e=>{
-  if(arrastre && S.ajustando && fondo){
-    const m = pantallaAMundo(e.clientX-arrastre.x, e.clientY-arrastre.y, arrastre.rot);
-    fondo.x0 = arrastre.x0 + m.x; fondo.y0 = arrastre.y0 + m.y;
-    fondo.exacto = false;
-  }
-});
+// con mouse, para poder probarlo en la computadora
+cvs.addEventListener('mousedown', e=>{ empezarArrastre(e.clientX, e.clientY); });
+addEventListener('mousemove', e=>{ if(arrastre) seguirArrastre(e.clientX, e.clientY); });
 addEventListener('mouseup', ()=>{ if(!pinch0) arrastre=null; });
+$('volverBtn').addEventListener('click', volverAlTractor);
 
 syncWidthInputs(); abLabel(); updateHUD();
 syncFondoUI(); cargarFondoGuardado();
